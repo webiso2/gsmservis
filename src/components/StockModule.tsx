@@ -1,9 +1,7 @@
-// --- START OF FILE src/StockModule.tsx ---
-
 import React, { useState, useCallback, useMemo } from 'react';
 import { useQueryClient } from "@tanstack/react-query";
 import { useProducts, useWholesalers } from "@/hooks/useAppData";
-import { X, PackagePlus, FileEdit, PackageMinus, Plus, Minus, Search, Loader2, ArrowUpDown, ArrowUp, ArrowDown, Save, Wand2, Package } from 'lucide-react';
+import { X, PackagePlus, FileEdit, PackageMinus, Plus, Minus, Search, Loader2, ArrowUpDown, ArrowUp, ArrowDown, Save, Wand2, Package, RefreshCcw } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -23,8 +21,45 @@ const subCategoryMap: Record<MainCategory, { value: SubCategory; label: string }
     'SR': [{ value: 'SR-SARJ', label: 'Şarj Aleti (Set)' }, { value: 'SR-KABLO', label: 'Data Kablosu' }, { value: 'SR-BASLIK', label: 'Şarj Başlığı' }, { value: 'SR-PWR', label: 'Powerbank' }, { value: 'SR-KULAK', label: 'Kulaklık' }, { value: 'SR-DIGER', label: 'Diğer Sarf M.' }]
 };
 
-interface FormData { code: string; name: string; description: string; main_category: MainCategory | ''; sub_category: SubCategory | ''; brand: string; model: string; quantity: string; unit: string; purchase_price: string; selling_price: string; min_stock_level: string; supplier: string; custom_code_part: string; }
-const initialFormData: FormData = { code: "", name: "", description: "", main_category: '', sub_category: '', brand: '', model: '', quantity: "0", unit: "adet", purchase_price: "0", selling_price: "0", min_stock_level: "0", supplier: "", custom_code_part: "" };
+interface FormData {
+    code: string;
+    name: string;
+    description: string;
+    main_category: MainCategory | '';
+    sub_category: SubCategory | '';
+    brand: string;
+    model: string;
+    quantity: string;
+    unit: string;
+    purchase_price: string;
+    selling_price: string;
+    min_stock_level: string;
+    supplier: string;
+    supplier_id: string;
+    custom_code_part: string;
+    purchase_price_currency: 'TRY' | 'USD';
+    exchange_rate: string;
+}
+
+const initialFormData: FormData = {
+    code: "",
+    name: "",
+    description: "",
+    main_category: '',
+    sub_category: '',
+    brand: '',
+    model: '',
+    quantity: "0",
+    unit: "adet",
+    purchase_price: "0",
+    selling_price: "0",
+    min_stock_level: "0",
+    supplier: "",
+    supplier_id: "",
+    custom_code_part: "",
+    purchase_price_currency: 'TRY',
+    exchange_rate: "1"
+};
 
 interface StockModuleProps { onClose: () => void; }
 async function checkAndAddNeed(productId: string, productName: string, currentQuantity: number, minStockLevel: number, toastFn: (options: any) => void) { if (minStockLevel <= 0 || currentQuantity >= minStockLevel) return; try { const { count, error: checkError } = await supabase.from('needs').select('id', { count: 'exact', head: true }).eq('product_id', productId); if (checkError) { console.error("İhtiyaç Kontrol hatası:", checkError); return; } if (count === 0) { const quantityNeeded = minStockLevel - currentQuantity > 0 ? minStockLevel - currentQuantity : 1; const { error: insertError } = await supabase.from('needs').insert({ date: new Date().toISOString(), description: `${productName} (Stok Azaldı)`, quantity: quantityNeeded, product_id: productId, supplier: null }); if (insertError) { console.error("Otomatik ihtiyaç EKLEME hatası:", insertError); toastFn({ title: "Hata", description: `"${productName}" ihtiyaç listesine eklenemedi: ${insertError.message}`, variant: "destructive" }); } else { toastFn({ title: "Bilgi", description: `"${productName}" ihtiyaç listesine eklendi.` }); window.dispatchEvent(new CustomEvent('needs-updated')); } } } catch (error) { console.error("[checkAndAddNeed] İhtiyaç ekleme sırasında hata:", error); } }
@@ -52,7 +87,32 @@ const StockModule: React.FC<StockModuleProps> = ({ onClose }) => {
 
     const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => { const { name, value } = e.target; setFormData(p => ({ ...p, [name]: value })); };
     const handleSelectChange = (name: 'main_category' | 'sub_category', value: string) => { setFormData(p => ({ ...p, [name]: value, ...(name === 'main_category' && { sub_category: '', code: '', custom_code_part: '' }) })); };
-    const handleProductSelect = (product: Product) => { if (isEditing) return; setSelectedProduct(product); setFormData({ code: product.code, name: product.name, description: product.description ?? '', main_category: (product.main_category as MainCategory) || '', sub_category: (product.sub_category as SubCategory) || '', brand: product.brand ?? '', model: product.model ?? '', quantity: product.quantity.toString(), unit: product.unit ?? 'adet', purchase_price: product.purchase_price.toString(), selling_price: product.selling_price.toString(), min_stock_level: product.min_stock_level.toString(), supplier: product.supplier ?? '', custom_code_part: '' }); };
+    // Updated to reset/preserve new fields, though we usually just set basic fields on edit product.
+    // NOTE: When editing an EXISTING product, we usually don't know the original currency of purchase unless we tracked it.
+    // For now, we will default to TRY and 0 if we don't have that data, or just show the TRY price.
+    const handleProductSelect = (product: Product) => {
+        if (isEditing) return;
+        setSelectedProduct(product);
+        setFormData({
+            code: product.code,
+            name: product.name,
+            description: product.description ?? '',
+            main_category: (product.main_category as MainCategory) || '',
+            sub_category: (product.sub_category as SubCategory) || '',
+            brand: product.brand ?? '',
+            model: product.model ?? '',
+            quantity: product.quantity.toString(),
+            unit: product.unit ?? 'adet',
+            purchase_price: product.purchase_price.toString(),
+            selling_price: product.selling_price.toString(),
+            min_stock_level: product.min_stock_level.toString(),
+            supplier: product.supplier ?? '',
+            supplier_id: '', // Reset on select because regular products table doesn't have supplier_id foreign key usually? We will check.
+            custom_code_part: '',
+            purchase_price_currency: 'TRY',
+            exchange_rate: '1'
+        });
+    };
 
     const generateProductCode = useCallback(async () => {
         const { main_category, sub_category, brand, model } = formData;
@@ -99,8 +159,111 @@ const StockModule: React.FC<StockModuleProps> = ({ onClose }) => {
     }, [formData, toast]);
 
 
-    const prepareDataForSupabase = (data: FormData, isNew: boolean = false) => { const code = data.code.trim(); const name = data.name.trim(); if (!code || !name) { toast({ title: "Uyarı", description: "Kod ve Ad zorunludur.", variant: "destructive" }); return null; } const quantity = parseInt(data.quantity) || 0; const purchasePrice = parseFloat(data.purchase_price) || 0; const sellingPrice = parseFloat(data.selling_price) || 0; const minStockLevel = parseInt(data.min_stock_level) || 0; if ((isNew && quantity < 0) || purchasePrice < 0 || sellingPrice < 0 || minStockLevel < 0) { toast({ title: "Uyarı", description: "Sayısal alanlar negatif olamaz.", variant: "destructive" }); return null; } let dbData: Partial<Product> = { code: code, name: name, description: data.description?.trim() || null, main_category: data.main_category || null, sub_category: data.sub_category || null, brand: data.brand?.trim() || null, model: data.model?.trim() || null, unit: data.unit?.trim() || 'adet', purchase_price: purchasePrice, selling_price: sellingPrice, min_stock_level: minStockLevel, supplier: data.supplier?.trim() || null, }; if (isNew) { dbData.quantity = quantity; } return dbData; };
-    const handleAddProduct = async () => { if (isEditing) return; const productData = prepareDataForSupabase(formData, true); if (!productData) return; setIsSaving(true); try { const { count, error: cE } = await supabase.from('products').select('id', { count: 'exact', head: true }).eq('code', productData.code!); if (cE) throw new Error(`Kod kontrolü başarısız: ${cE.message}`); if (count !== null && count > 0) { toast({ title: "Hata", description: `"${productData.code}" kodu zaten kullanılıyor.`, variant: "destructive" }); setIsSaving(false); return; } const { data: newProduct, error: insertError } = await supabase.from('products').insert(productData as Product).select('id').single(); if (insertError) throw new Error(`Ürün eklenemedi: ${insertError.message}`); if (!newProduct) throw new Error("Ürün eklendi ancak ID alınamadı."); toast({ title: "Başarılı", description: `Ürün "${productData.name}" başarıyla eklendi.` }); await queryClient.invalidateQueries({ queryKey: ['products'] }); setFormData(initialFormData); setSelectedProduct(null); } catch (error: any) { console.error("Yeni ürün ekleme hatası:", error); toast({ title: "Hata", description: `Ürün eklenemedi: ${error.message}`, variant: "destructive" }); } finally { setIsSaving(false); } };
+    const prepareDataForSupabase = (data: FormData, isNew: boolean = false) => {
+        const code = data.code.trim();
+        const name = data.name.trim();
+        if (!code || !name) { toast({ title: "Uyarı", description: "Kod ve Ad zorunludur.", variant: "destructive" }); return null; }
+        const quantity = parseFloat(data.quantity) || 0;
+
+        // Calculate TRY Price
+        let purchasePrice = parseFloat(data.purchase_price) || 0;
+        if (data.purchase_price_currency === 'USD') {
+            const rate = parseFloat(data.exchange_rate) || 1;
+            purchasePrice = purchasePrice * rate;
+        }
+
+        const sellingPrice = parseFloat(data.selling_price) || 0;
+        const minStockLevel = parseInt(data.min_stock_level) || 0;
+
+        if ((isNew && quantity < 0) || purchasePrice < 0 || sellingPrice < 0 || minStockLevel < 0) { toast({ title: "Uyarı", description: "Sayısal alanlar negatif olamaz.", variant: "destructive" }); return null; }
+
+        let dbData: Partial<Product> = {
+            code: code,
+            name: name,
+            description: data.description?.trim() || null,
+            main_category: data.main_category || null,
+            sub_category: data.sub_category || null,
+            brand: data.brand?.trim() || null,
+            model: data.model?.trim() || null,
+            unit: data.unit?.trim() || 'adet',
+            purchase_price: purchasePrice,
+            selling_price: sellingPrice,
+            min_stock_level: minStockLevel,
+            supplier: data.supplier?.trim() || null,
+        };
+        if (isNew) { dbData.quantity = quantity; }
+        return dbData;
+    };
+
+    const handleAddProduct = async () => {
+        if (isEditing) return;
+        const productData = prepareDataForSupabase(formData, true);
+        if (!productData) return;
+
+        setIsSaving(true);
+        try {
+            // 1. Check Code
+            const { count, error: cE } = await supabase.from('products').select('id', { count: 'exact', head: true }).eq('code', productData.code!);
+            if (cE) throw new Error(`Kod kontrolü başarısız: ${cE.message}`);
+            if (count !== null && count > 0) { toast({ title: "Hata", description: `"${productData.code}" kodu zaten kullanılıyor.`, variant: "destructive" }); setIsSaving(false); return; }
+
+            // 2. Insert Product
+            const { data: newProduct, error: insertError } = await supabase.from('products').insert(productData as Product).select('id').single();
+            if (insertError) throw new Error(`Ürün eklenemedi: ${insertError.message}`);
+            if (!newProduct) throw new Error("Ürün eklendi ancak ID alınamadı.");
+
+            // 3. Handle Wholesaler Debt (New Logic)
+            if (formData.supplier_id) {
+                const quantity = parseFloat(formData.quantity) || 0;
+                const priceVal = parseFloat(formData.purchase_price) || 0;
+
+                if (quantity > 0 && priceVal > 0) {
+                    let totalTRY = quantity * priceVal;
+                    let totalUSD = 0;
+
+                    if (formData.purchase_price_currency === 'USD') {
+                        const rate = parseFloat(formData.exchange_rate) || 1;
+                        totalUSD = quantity * priceVal;
+                        totalTRY = totalUSD * rate;
+                    } else {
+                        totalUSD = 0;
+                    }
+
+                    // RPC to update balance
+                    const { error: debtError } = await supabase.rpc('increment_wholesaler_debt', {
+                        wholesaler_id_input: formData.supplier_id,
+                        debt_change_try: totalTRY,
+                        debt_change_usd: totalUSD
+                    });
+
+                    if (debtError) console.error("Borç güncelleme hatası:", debtError);
+                    else {
+                        // Add Transaction Record
+                        await supabase.from('wholesaler_transactions').insert({
+                            wholesaler_id: formData.supplier_id,
+                            date: new Date().toISOString(),
+                            type: 'purchase',
+                            amount: totalTRY, // Base currency is always useful, or store depending on logic
+                            description: `Stok Girişi - ${formData.name} (${quantity} ${formData.unit})`,
+                            // related_purchase_invoice_id: null // Not an invoice per se
+                        });
+                        toast({ title: "Bilgi", description: "Toptancı bakiyesi güncellendi." });
+                    }
+                }
+            }
+
+            toast({ title: "Başarılı", description: `Ürün "${productData.name}" başarıyla eklendi.` });
+            await queryClient.invalidateQueries({ queryKey: ['products'] });
+            await queryClient.invalidateQueries({ queryKey: ['wholesalers'] });
+            setFormData(initialFormData);
+            setSelectedProduct(null);
+        } catch (error: any) {
+            console.error("Yeni ürün ekleme hatası:", error);
+            toast({ title: "Hata", description: `Ürün eklenemedi: ${error.message}`, variant: "destructive" });
+        } finally {
+            setIsSaving(false);
+        }
+    };
     const handleEditClick = () => { if (!isEditing) { if (!selectedProduct) { toast({ title: "Bilgi", description: "Lütfen düzenlemek için bir ürün seçin.", variant: "default" }); return; } setIsEditing(true); } else { handleUpdateProduct(); } };
     const handleCancelEdit = () => { setIsEditing(false); setSelectedProduct(null); setFormData(initialFormData); };
     const handleUpdateProduct = async () => { if (!selectedProduct || !isEditing) return; const productUpdateData = prepareDataForSupabase(formData, false); if (!productUpdateData) return; setIsSaving(true); try { if (productUpdateData.code !== selectedProduct.code) { const { count, error: checkError } = await supabase.from('products').select('id', { count: 'exact', head: true }).eq('code', productUpdateData.code!).neq('id', selectedProduct.id); if (checkError) throw checkError; if (count !== null && count > 0) { toast({ title: "Hata", description: `"${productUpdateData.code}" kodu başka bir ürüne ait.`, variant: "destructive" }); setIsSaving(false); return; } } const { data, error } = await supabase.from('products').update(productUpdateData).eq('id', selectedProduct.id).select().single(); if (error) throw error; toast({ title: "Başarılı", description: "Ürün bilgileri güncellendi." }); await queryClient.invalidateQueries({ queryKey: ['products'] }); setIsEditing(false); setSelectedProduct(null); setFormData(initialFormData); } catch (error: any) { console.error("Ürün Güncelleme Hatası:", error); toast({ title: "Hata", description: `Ürün güncellenemedi: ${error.message}`, variant: "destructive" }); } finally { setIsSaving(false); } };
@@ -131,137 +294,198 @@ const StockModule: React.FC<StockModuleProps> = ({ onClose }) => {
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 h-full overflow-hidden">
                             {/* Sol Panel (Form) */}
                             <div className="glass-card p-4 overflow-y-auto">
-                                <h2 className="text-lg font-semibold mb-4 text-white flex items-center gap-2">
-                                    {isEditing ? <FileEdit className="h-5 w-5 text-blue-400" /> : <PackagePlus className="h-5 w-5 text-green-400" />}
-                                    {isEditing ? 'Ürünü Düzenle' : 'Yeni Ürün Ekle'}
-                                </h2>
-
-                                <div className="space-y-4">
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                        <div className="space-y-1.5">
-                                            <Label htmlFor="form-main_category" className="text-xs font-medium text-gray-400">Ana Kategori *</Label>
-                                            <Select value={formData.main_category} onValueChange={(v) => handleSelectChange('main_category', v)} disabled={isSaving || isEditing}>
-                                                <SelectTrigger id="form-main_category" className="h-9 bg-white/5 border-white/10 text-white text-xs focus:ring-orange-500/50">
-                                                    <SelectValue placeholder="Seçiniz..." />
-                                                </SelectTrigger>
-                                                <SelectContent className="bg-gray-900 border-gray-800 text-white">
-                                                    {Object.keys(subCategoryMap).map((key) => (<SelectItem key={key} value={key} className="focus:bg-gray-800 focus:text-white">{key}</SelectItem>))}
-                                                </SelectContent>
-                                            </Select>
-                                        </div>
-                                        <div className="space-y-1.5">
-                                            <Label htmlFor="form-sub_category" className="text-xs font-medium text-gray-400">Alt Kategori</Label>
-                                            <Select value={formData.sub_category} onValueChange={(v) => handleSelectChange('sub_category', v)} disabled={isSaving || isEditing || !formData.main_category}>
-                                                <SelectTrigger id="form-sub_category" className="h-9 bg-white/5 border-white/10 text-white text-xs focus:ring-orange-500/50">
-                                                    <SelectValue placeholder="Önce Ana Kat." />
-                                                </SelectTrigger>
-                                                <SelectContent className="bg-gray-900 border-gray-800 text-white">
-                                                    {availableSubCategories.map((sub) => (<SelectItem key={sub.value} value={sub.value} className="focus:bg-gray-800 focus:text-white">{sub.label}</SelectItem>))}
-                                                </SelectContent>
-                                            </Select>
-                                        </div>
-                                    </div>
-
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                        <div className="space-y-1.5">
-                                            <Label htmlFor="form-brand" className="text-xs font-medium text-gray-400">Marka</Label>
-                                            <Input id="form-brand" type="text" name="brand" value={formData.brand} onChange={handleInputChange} placeholder="Apple, Samsung..." className="h-9 bg-white/5 border-white/10 text-white text-xs focus:border-orange-500/50" disabled={isSaving} />
-                                        </div>
-                                        <div className="space-y-1.5">
-                                            <Label htmlFor="form-model" className="text-xs font-medium text-gray-400">Model</Label>
-                                            <Input id="form-model" type="text" name="model" value={formData.model} onChange={handleInputChange} placeholder="iPhone 13, S21..." className="h-9 bg-white/5 border-white/10 text-white text-xs focus:border-orange-500/50" disabled={isSaving} />
-                                        </div>
-                                    </div>
-
+                                {/* Group 1: Identity */}
+                                <div className="grid grid-cols-2 gap-3 mb-3">
                                     <div className="space-y-1.5">
-                                        <Label htmlFor="form-name" className="text-xs font-medium text-gray-400">Ürün Adı *</Label>
-                                        <Input id="form-name" type="text" name="name" value={formData.name} onChange={handleInputChange} placeholder="Ürün adını giriniz" className="h-9 bg-white/5 border-white/10 text-white text-xs focus:border-orange-500/50" disabled={isSaving} />
-                                    </div>
-
-                                    <div className="space-y-1.5">
-                                        <Label htmlFor="form-code" className="text-xs font-medium text-gray-400">Ürün Kodu *</Label>
-                                        <div className="flex gap-2">
-                                            <Input id="form-code" type="text" name="code" value={formData.code} onChange={handleInputChange} placeholder="Kod oluşturun veya manuel girin" className="flex-1 h-9 bg-white/5 border-white/10 text-white text-xs focus:border-orange-500/50 font-mono" disabled={isSaving || isEditing} readOnly={isEditing} />
+                                        <Label htmlFor="code" className="text-xs font-medium text-gray-400">Ürün Kodu</Label>
+                                        <div className="flex gap-1">
+                                            <Input id="code" name="code" value={formData.code} onChange={handleInputChange} placeholder="Oto. veya Manuel" className="h-9 bg-white/5 border-white/10 text-white text-xs focus:border-orange-500/50" disabled={isEditing || isSaving} />
                                             {!isEditing && (
-                                                <Button type="button" size="sm" variant="outline" onClick={generateProductCode} className="h-9 text-xs bg-blue-500/20 text-blue-400 border-blue-500/30 hover:bg-blue-500/30" disabled={isSaving || isGeneratingCode || !formData.main_category || !formData.sub_category} title="Otomatik Kod Oluştur">
+                                                <Button type="button" size="icon" variant="outline" className="h-9 w-9 border-white/10 text-orange-400 hover:bg-orange-500/20 shrink-0" onClick={generateProductCode} disabled={isGeneratingCode || isSaving} title="Otomatik Kod">
                                                     {isGeneratingCode ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
                                                 </Button>
                                             )}
                                         </div>
-                                        {!isEditing && <p className="text-[10px] text-gray-500 mt-1">Kod oluşturmak için Kategori, Marka, Model girin ve Sihirbaza tıklayın.</p>}
                                     </div>
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor="name" className="text-xs font-medium text-gray-400">Ürün Adı</Label>
+                                        <Input id="name" name="name" value={formData.name} onChange={handleInputChange} placeholder="Örn: iPhone 11 Ekran" className="h-9 bg-white/5 border-white/10 text-white text-xs focus:border-orange-500/50" disabled={isSaving} />
+                                    </div>
+                                </div>
 
+                                {/* Group 2: Categorization */}
+                                <div className="grid grid-cols-2 gap-3 mb-3">
+                                    <div className="space-y-1.5">
+                                        <Label className="text-xs font-medium text-gray-400">Ana Kategori</Label>
+                                        <Select value={formData.main_category} onValueChange={(val: MainCategory) => setFormData(p => ({ ...p, main_category: val, sub_category: '' }))} disabled={isSaving}>
+                                            <SelectTrigger className="h-9 bg-white/5 border-white/10 text-white text-xs">
+                                                <SelectValue placeholder="Seçiniz" />
+                                            </SelectTrigger>
+                                            <SelectContent className="bg-gray-800 border-gray-700 text-white">
+                                                {Object.keys(subCategoryMap).map((k) => (
+                                                    <SelectItem key={k} value={k}>{k}</SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="space-y-1.5">
+                                        <Label className="text-xs font-medium text-gray-400">Alt Kategori</Label>
+                                        <Select value={formData.sub_category} onValueChange={(val: SubCategory) => setFormData(p => ({ ...p, sub_category: val }))} disabled={!formData.main_category || isSaving}>
+                                            <SelectTrigger className="h-9 bg-white/5 border-white/10 text-white text-xs">
+                                                <SelectValue placeholder="Seçiniz" />
+                                            </SelectTrigger>
+                                            <SelectContent className="bg-gray-800 border-gray-700 text-white">
+                                                {availableSubCategories.map((cat) => (
+                                                    <SelectItem key={cat.value} value={cat.value}>{cat.label}</SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                </div>
+
+                                {/* Group 3: Details */}
+                                <div className="grid grid-cols-2 gap-3 mb-3">
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor="brand" className="text-xs font-medium text-gray-400">Marka</Label>
+                                        <Input id="brand" name="brand" value={formData.brand} onChange={handleInputChange} placeholder="Apple, Samsung..." className="h-9 bg-white/5 border-white/10 text-white text-xs focus:border-orange-500/50" disabled={isSaving} />
+                                    </div>
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor="model" className="text-xs font-medium text-gray-400">Model</Label>
+                                        <Input id="model" name="model" value={formData.model} onChange={handleInputChange} placeholder="11, S23..." className="h-9 bg-white/5 border-white/10 text-white text-xs focus:border-orange-500/50" disabled={isSaving} />
+                                    </div>
+                                </div>
+
+                                {/* Group 4: Metadata */}
+                                <div className="grid grid-cols-1 gap-3 mb-3">
                                     {!isEditing && (
                                         <div className="space-y-1.5">
-                                            <Label htmlFor="form-custom_code_part" className="text-xs font-medium text-gray-400">Özel Kod Parçası (Otomatik Kod Sonu)</Label>
-                                            <Input id="form-custom_code_part" type="text" name="custom_code_part" value={formData.custom_code_part} onChange={handleInputChange} placeholder="Renk, Kalite, No vb." className="h-9 bg-white/5 border-white/10 text-white text-xs focus:border-orange-500/50" disabled={isSaving} />
+                                            <Label htmlFor="form-custom_code_part" className="text-xs font-medium text-gray-400">Özel Kod Soneki (Opsiyonel)</Label>
+                                            <Input id="form-custom_code_part" type="text" name="custom_code_part" value={formData.custom_code_part} onChange={handleInputChange} placeholder="Renk, Kalite vb. (Örn: RED)" className="h-9 bg-white/5 border-white/10 text-white text-xs focus:border-orange-500/50" disabled={isSaving} />
                                         </div>
                                     )}
-
                                     <div className="space-y-1.5">
                                         <Label htmlFor="form-desc" className="text-xs font-medium text-gray-400">Açıklama</Label>
-                                        <Textarea id="form-desc" name="description" value={formData.description} onChange={handleInputChange} placeholder="Ürün açıklaması giriniz" className="min-h-[60px] bg-white/5 border-white/10 text-white text-xs focus:border-orange-500/50 resize-none" disabled={isSaving} />
+                                        <Textarea id="form-desc" name="description" value={formData.description} onChange={handleInputChange} placeholder="Ürün hakkında notlar..." className="min-h-[50px] bg-white/5 border-white/10 text-white text-xs focus:border-orange-500/50 resize-none" disabled={isSaving} />
                                     </div>
+                                </div>
 
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                        <div className="space-y-1.5">
-                                            <Label htmlFor="form-quantity" className="text-xs font-medium text-gray-400">{isEditing ? 'Mevcut Miktar' : 'İlk Stok Miktarı'}</Label>
-                                            <Input id="form-quantity" type="number" name="quantity" value={formData.quantity} onChange={handleInputChange} placeholder="0" min="0" step="any" className={cn("h-9 text-xs text-right bg-white/5 border-white/10 text-white focus:border-orange-500/50", isEditing && 'opacity-50 cursor-not-allowed')} disabled={isSaving || isEditing} readOnly={isEditing} />
-                                        </div>
-                                        <div className="space-y-1.5">
-                                            <Label htmlFor="form-unit" className="text-xs font-medium text-gray-400">Birim</Label>
-                                            <Input id="form-unit" type="text" name="unit" value={formData.unit} onChange={handleInputChange} placeholder="Adet, Kg, Lt" className="h-9 bg-white/5 border-white/10 text-white text-xs text-center focus:border-orange-500/50" disabled={isSaving} />
-                                        </div>
+                                <div className="h-px bg-white/10 my-4" />
+
+                                {/* Group 5: Inventory & Pricing */}
+                                <div className="grid grid-cols-2 gap-3 mb-3">
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor="form-quantity" className="text-xs font-medium text-gray-400">{isEditing ? 'Stok Miktarı' : 'Başlangıç Stoğu'}</Label>
+                                        <Input id="form-quantity" type="number" name="quantity" value={formData.quantity} onChange={handleInputChange} placeholder="0" min="0" step="any" className={cn("h-9 text-xs text-right bg-white/5 border-white/10 text-white focus:border-orange-500/50", isEditing && "opacity-50")} disabled={isSaving || isEditing} readOnly={isEditing} />
                                     </div>
-
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                        <div className="space-y-1.5">
-                                            <Label htmlFor="form-purchasep" className="text-xs font-medium text-gray-400">Vars. Alış Fiyatı (₺)</Label>
-                                            <Input id="form-purchasep" type="number" name="purchase_price" value={formData.purchase_price} onChange={handleInputChange} placeholder="0.00" min="0" step="0.01" className="h-9 bg-white/5 border-white/10 text-white text-xs text-right focus:border-orange-500/50" disabled={isSaving} />
-                                        </div>
-                                        <div className="space-y-1.5">
-                                            <Label htmlFor="form-sellp" className="text-xs font-medium text-gray-400">Satış Fiyatı (₺)</Label>
-                                            <Input id="form-sellp" type="number" name="selling_price" value={formData.selling_price} onChange={handleInputChange} placeholder="0.00" min="0" step="0.01" className="h-9 bg-white/5 border-white/10 text-white text-xs text-right focus:border-orange-500/50" disabled={isSaving} />
-                                        </div>
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor="form-unit" className="text-xs font-medium text-gray-400">Birim</Label>
+                                        <Input id="form-unit" type="text" name="unit" value={formData.unit} onChange={handleInputChange} placeholder="Adet" className="h-9 bg-white/5 border-white/10 text-white text-xs text-center focus:border-orange-500/50" disabled={isSaving} />
                                     </div>
+                                </div>
 
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                        <div className="space-y-1.5">
-                                            <Label htmlFor="form-minstock" className="text-xs font-medium text-gray-400">Min. Stok</Label>
-                                            <Input id="form-minstock" type="number" name="min_stock_level" value={formData.min_stock_level} onChange={handleInputChange} placeholder="0" min="0" className="h-9 bg-white/5 border-white/10 text-white text-xs text-right focus:border-orange-500/50" disabled={isSaving} />
-                                        </div>
-                                        <div className="space-y-1.5">
-                                            <Label htmlFor="form-supplier" className="text-xs font-medium text-gray-400">Vars. Tedarikçi</Label>
-                                            <Select value={formData.supplier} onValueChange={(v) => setFormData(p => ({ ...p, supplier: v }))} disabled={isSaving}>
-                                                <SelectTrigger id="form-supplier" className="h-9 bg-white/5 border-white/10 text-white text-xs focus:ring-orange-500/50">
-                                                    <SelectValue placeholder="Tedarikçi Seçiniz" />
+                                <div className="grid grid-cols-2 gap-3 mb-3">
+                                    <div className="space-y-1.5 relative">
+                                        <Label htmlFor="form-purchasep" className="text-xs font-medium text-gray-400">Alış Fiyatı</Label>
+                                        <div className="flex gap-1">
+                                            <Input
+                                                id="form-purchasep"
+                                                type="number"
+                                                name="purchase_price"
+                                                value={formData.purchase_price}
+                                                onChange={handleInputChange}
+                                                placeholder="0.00"
+                                                className="h-9 flex-1 bg-white/5 border-white/10 text-white text-xs text-right focus:border-orange-500/50"
+                                                disabled={isSaving}
+                                            />
+                                            <Select
+                                                value={formData.purchase_price_currency}
+                                                onValueChange={(v: 'TRY' | 'USD') => setFormData(p => ({ ...p, purchase_price_currency: v }))}
+                                                disabled={isSaving}
+                                            >
+                                                <SelectTrigger className="h-9 w-[65px] bg-white/5 border-white/10 text-white text-xs px-2">
+                                                    <SelectValue />
                                                 </SelectTrigger>
-                                                <SelectContent className="bg-gray-900 border-gray-800 text-white">
-                                                    <SelectItem value="Bilinmiyor" className="focus:bg-gray-800 focus:text-white">Bilinmiyor</SelectItem>
-                                                    {wholesalers.map((w) => (
-                                                        <SelectItem key={w.id} value={w.name} className="focus:bg-gray-800 focus:text-white">{w.name}</SelectItem>
-                                                    ))}
+                                                <SelectContent className="bg-gray-800 border-gray-700 text-white">
+                                                    <SelectItem value="TRY">TL</SelectItem>
+                                                    <SelectItem value="USD">USD</SelectItem>
                                                 </SelectContent>
                                             </Select>
                                         </div>
-                                    </div>
-
-                                    <div className="flex gap-2 mt-4 pt-2 border-t border-white/10">
-                                        {isEditing ? (
-                                            <>
-                                                <Button className="flex-1 bg-blue-600 hover:bg-blue-700 text-white" onClick={handleUpdateProduct} disabled={isSaving}>
-                                                    {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />} Güncelle
-                                                </Button>
-                                                <Button variant="outline" className="flex-1 border-white/10 text-white hover:bg-white/10" onClick={handleCancelEdit} disabled={isSaving}>
-                                                    <X className="mr-2 h-4 w-4" /> İptal
-                                                </Button>
-                                            </>
-                                        ) : (
-                                            <Button className="flex-1 bg-green-600 hover:bg-green-700 text-white" onClick={handleAddProduct} disabled={isSaving}>
-                                                {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <PackagePlus className="mr-2 h-4 w-4" />} Yeni Ürün Ekle
-                                            </Button>
+                                        {formData.purchase_price_currency === 'USD' && (
+                                            <div className="absolute top-full left-0 right-0 mt-1 z-10">
+                                                <div className="bg-gray-900 border border-blue-500/30 rounded-md p-1.5 flex items-center gap-2 shadow-lg">
+                                                    <span className="text-[10px] text-blue-400 font-medium whitespace-nowrap">Kur:</span>
+                                                    <Input
+                                                        type="number"
+                                                        placeholder="32.50"
+                                                        name="exchange_rate"
+                                                        value={formData.exchange_rate}
+                                                        onChange={handleInputChange}
+                                                        className="h-6 text-xs bg-black/50 border-white/10 text-white w-full"
+                                                    />
+                                                </div>
+                                            </div>
                                         )}
                                     </div>
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor="form-sellp" className="text-xs font-medium text-gray-400">Satış Fiyatı (TL)</Label>
+                                        <div className="relative">
+                                            <Input id="form-sellp" type="number" name="selling_price" value={formData.selling_price} onChange={handleInputChange} placeholder="0.00" min="0" step="0.01" className="h-9 bg-white/5 border-white/10 text-white text-xs text-right pr-6 focus:border-orange-500/50" disabled={isSaving} />
+                                            <span className="absolute right-2 top-2.5 text-xs text-gray-500">₺</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-3 mb-6">
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor="form-minstock" className="text-xs font-medium text-gray-400">Min. Stok</Label>
+                                        <Input id="form-minstock" type="number" name="min_stock_level" value={formData.min_stock_level} onChange={handleInputChange} placeholder="5" min="0" className="h-9 bg-white/5 border-white/10 text-white text-xs text-right focus:border-orange-500/50" disabled={isSaving} />
+                                    </div>
+                                    <div className="space-y-1.5">
+                                        <Label htmlFor="form-supplier" className="text-xs font-medium text-gray-400">Tedarikçi (Opsiyonel)</Label>
+                                        <Select
+                                            value={formData.supplier_id || "Bilinmiyor"}
+                                            onValueChange={(val) => {
+                                                const selectedW = wholesalers.find(w => w.id === val);
+                                                setFormData(p => ({
+                                                    ...p,
+                                                    supplier_id: selectedW ? val : "",
+                                                    supplier: selectedW ? selectedW.name : ""
+                                                }));
+                                            }}
+                                            disabled={isSaving}
+                                        >
+                                            <SelectTrigger id="form-supplier" className="h-9 bg-white/5 border-white/10 text-white text-xs focus:ring-orange-500/50 truncate">
+                                                <SelectValue placeholder="Seçiniz" />
+                                            </SelectTrigger>
+                                            <SelectContent className="bg-gray-900 border-gray-800 text-white">
+                                                <SelectItem value="Bilinmiyor" className="focus:bg-gray-800 focus:text-white">Seçilmedi</SelectItem>
+                                                {wholesalers.map((w) => (
+                                                    <SelectItem key={w.id} value={w.id} className="focus:bg-gray-800 focus:text-white">{w.name}</SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                        {formData.supplier_id && formData.supplier_id !== "Bilinmiyor" && (
+                                            <p className="text-[10px] text-blue-400">* Bu işlem bakiyeye yansıtılacak.</p>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="flex gap-2 mt-4 pt-2 border-t border-white/10">
+                                    {isEditing ? (
+                                        <>
+                                            <Button className="flex-1 bg-blue-600 hover:bg-blue-700 text-white" onClick={handleUpdateProduct} disabled={isSaving}>
+                                                {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />} Güncelle
+                                            </Button>
+                                            <Button variant="outline" className="flex-1 border-white/10 text-white hover:bg-white/10" onClick={handleCancelEdit} disabled={isSaving}>
+                                                <X className="mr-2 h-4 w-4" /> İptal
+                                            </Button>
+                                        </>
+                                    ) : (
+                                        <Button className="flex-1 bg-green-600 hover:bg-green-700 text-white" onClick={handleAddProduct} disabled={isSaving}>
+                                            {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <PackagePlus className="mr-2 h-4 w-4" />} Yeni Ürün Ekle
+                                        </Button>
+                                    )}
                                 </div>
                             </div>
 
@@ -365,7 +589,7 @@ const StockModule: React.FC<StockModuleProps> = ({ onClose }) => {
                                             </Button>
                                             {isEditing && (
                                                 <Button variant="outline" className="flex-1 border-white/10 text-white hover:bg-white/10" onClick={handleCancelEdit} disabled={isSaving}>
-                                                    <X className="mr-1 h-4 w-4" /><span className="text-xs">İptal</span>
+                                                    <X className="mr-2 h-4 w-4" /><span className="text-xs">İptal</span>
                                                 </Button>
                                             )}
                                             <Button variant="outline" className={cn("flex-1 border-white/10 text-white hover:bg-red-600 hover:text-white hover:border-red-600", isEditing && "hidden")} onClick={handleDeleteProduct} disabled={!selectedProduct || isEditing || isLoading || isSaving}>
@@ -384,4 +608,3 @@ const StockModule: React.FC<StockModuleProps> = ({ onClose }) => {
 };
 
 export default StockModule;
-// --- END OF FILE src/StockModule.tsx ---

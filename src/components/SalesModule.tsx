@@ -19,6 +19,7 @@ import type { Account, Product as BackupProduct, Sale as BackupSale } from "@/ty
 import EditSaleDialog from './sales/EditSaleDialog';
 import { getSettings, AppSettings } from "@/utils/settingsUtils";
 import { generateSalesMessage, openWhatsApp } from "@/utils/whatsappUtils";
+import { cn } from "@/lib/utils";
 
 // --- Tipler ---
 interface Product extends BackupProduct { }
@@ -55,6 +56,7 @@ const SalesModule: React.FC<SalesModuleProps> = ({ onClose }) => {
     const [manualProduct, setManualProduct] = useState<Partial<Omit<Product, 'id' | 'created_at'>>>({ name: '', selling_price: 0, purchase_price: 0, quantity: 1, unit: 'adet' });
     const [showManualEntry, setShowManualEntry] = useState(false);
     const [discountAmount, setDiscountAmount] = useState<string>("0");
+    const [receivedAmount, setReceivedAmount] = useState<string>(""); // Alınan Tutar (Kapora/Tahsilat)
     const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
     const [selectedAccountId, setSelectedAccountId] = useState<string>('');
     const [isProcessingSale, setIsProcessingSale] = useState(false);
@@ -159,17 +161,47 @@ const SalesModule: React.FC<SalesModuleProps> = ({ onClose }) => {
         if (!window.confirm(`"${new Date(saleToDelete.date).toLocaleString('tr-TR')}" tarihli satışı silmek istediğinize emin misiniz?`)) return;
         setIsProcessingSale(true);
         try {
-            const { data: accTxData } = await supabase.from('account_transactions').select('id, account_id, amount').eq('related_sale_id', saleId).maybeSingle();
+            // 1. İlgili ödeme işlemini bul (Account Transaction üzerinden)
+            const { data: accTxData } = await supabase.from('account_transactions').select('id, account_id, amount, related_customer_tx_id').eq('related_sale_id', saleId).maybeSingle();
+
+            // 2. Hesaptan parayı düş ve işlemi sil
             if (accTxData) {
+                // Customer Payment Transaction'ı sil (Eğer varsa)
+                if (accTxData.related_customer_tx_id) {
+                    await supabase.from('customer_transactions').delete().eq('id', accTxData.related_customer_tx_id);
+                }
+
+                // Account Transaction'ı sil
                 await supabase.from('account_transactions').delete().eq('id', accTxData.id);
+
+                // Bakiyeyi güncelle
                 if (accTxData.account_id && accTxData.amount != null) {
                     await supabase.rpc('increment_account_balance', { account_id_input: accTxData.account_id, balance_change: -accTxData.amount });
                     await queryClient.invalidateQueries({ queryKey: ['accounts'], refetchType: 'all' });
                 }
             }
+
+            // 3. Müşteri Borç Kaydını (Charge) Sil
+            // Charge işleminin ID'sini saklamadık ama CustomerID, Tarih ve Açıklama üzerinden bulabiliriz. 
+            // Veya daha güvenlisi: Satış sırasında açıklama'ya SaleID'yi koymuştuk.
+            // Description LIKE '%SaleID%' olanları sil.
+            const dateOnly = new Date(saleToDelete.date).toISOString().split('T')[0];
+            const { error: deleteChargeError } = await supabase.from('customer_transactions')
+                .delete()
+                .eq('customer_id', saleToDelete.customer_id)
+                .eq('type', 'charge')
+                .eq('date', dateOnly) // Tarih kontrolü de ekledik yanlışlık olmasın
+                .ilike('description', `%${saleId.substring(0, 6)}%`);
+
+            if (deleteChargeError) console.error("Borç kaydı silinirken hata:", deleteChargeError);
+
+            // 4. Müşteri Borcunu Güncelle
+            await supabase.rpc('update_customer_debt', { customer_id_input: saleToDelete.customer_id });
+
+
             const stockSuccess = await deleteSaleAndReturnStockInternal(saleId, saleToDelete.is_stockless, saleToDelete.items);
             await queryClient.invalidateQueries({ queryKey: ['sales'], refetchType: 'all' });
-            if (stockSuccess) toast({ title: "Başarılı", description: "Satış silindi." });
+            if (stockSuccess) toast({ title: "Başarılı", description: "Satış ve ilgili işlemler silindi." });
             else toast({ title: "Uyarı", description: "Satış silindi, stok iadesinde sorunlar olabilir.", variant: "destructive" });
         } catch (error: any) {
             toast({ title: "Hata", description: error.message, variant: "destructive" });
@@ -228,6 +260,12 @@ const SalesModule: React.FC<SalesModuleProps> = ({ onClose }) => {
 
     const calculateTotal = useMemo(() => cart.reduce((t, i) => t + ((i.selling_price ?? 0) * i.cartQuantity), 0), [cart]);
     const calculateNetTotal = useMemo(() => Math.max(0, calculateTotal - (parseFloat(discountAmount) || 0)), [calculateTotal, discountAmount]);
+
+    // Sepet veya indirim değişince alınan tutarı varsayılan olarak güncelle
+    useEffect(() => {
+        setReceivedAmount(calculateNetTotal.toString());
+    }, [calculateNetTotal]);
+
     const formatCurrency = (val: number) => new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY' }).format(val);
 
     const handleCompleteSale = useCallback(async () => {
@@ -271,13 +309,63 @@ const SalesModule: React.FC<SalesModuleProps> = ({ onClose }) => {
             if (saleError) throw saleError;
             saleId = savedSale.id;
 
-            const { data: accData } = await supabase.from('accounts').select('current_balance').eq('id', selectedAccountId).single();
-            const newBalance = (accData?.current_balance ?? 0) + netTotal;
+            // 1. Müşteriye BORÇ Ekle (Satış Tutarı Kadar) -> Transaction type: 'charge'
+            // NOT: dateOnly formatı yyyy-MM-dd olmalı
+            const dateOnly = localISOTime.split('T')[0];
+            const { data: chargeTx, error: chargeError } = await supabase.from('customer_transactions').insert({
+                customer_id: customerId,
+                date: dateOnly,
+                type: 'charge',
+                amount: netTotal,
+                description: `Satış: ${saleId?.substring(0, 6)} - Ürün Bedeli`
+            }).select('id').single();
+            if (chargeError) throw chargeError;
 
-            const { error: txError } = await supabase.from('account_transactions').insert({ date: localISOTime, account_id: selectedAccountId, type: 'sale_payment', amount: netTotal, balance_after: newBalance, description: `Satış: ${customers.find(c => c.id === customerId)?.name} (ID: ${saleId?.substring(0, 6)})`, related_sale_id: saleId });
-            if (txError) throw txError;
+            // 2. Eğer ödeme alındıysa TAHSİLAT ve KASA Girişi Yap
+            const paidAmount = parseFloat(receivedAmount) || 0;
 
-            await supabase.rpc('increment_account_balance', { account_id_input: selectedAccountId, balance_change: netTotal });
+            if (paidAmount > 0) {
+                // A) Müşteriden Tahsilat Düş (Payment)
+                const { data: paymentTx, error: paymentError } = await supabase.from('customer_transactions').insert({
+                    customer_id: customerId,
+                    date: dateOnly,
+                    type: 'payment',
+                    amount: -paidAmount,
+                    description: `Tahsilat: Satış (${saleId?.substring(0, 6)})`
+                }).select('id').single();
+
+                if (paymentError) throw paymentError;
+
+                // B) Kasaya/Bankaya Para Girişi
+                const { data: accData } = await supabase.from('accounts').select('current_balance').eq('id', selectedAccountId).single();
+                const newBalance = (accData?.current_balance ?? 0) + paidAmount;
+
+                const { error: txError } = await supabase.from('account_transactions').insert({
+                    date: localISOTime,
+                    account_id: selectedAccountId,
+                    type: 'sale_payment',
+                    amount: paidAmount, // Sadece alınan tutar girer
+                    balance_after: newBalance,
+                    description: `Satış Tahsilatı: ${customers.find(c => c.id === customerId)?.name} (ID: ${saleId?.substring(0, 6)})`,
+                    related_sale_id: saleId,
+                    related_customer_tx_id: paymentTx.id // İlişki kur
+                });
+                if (txError) throw txError;
+
+                await supabase.rpc('increment_account_balance', { account_id_input: selectedAccountId, balance_change: paidAmount });
+            }
+
+            // 3. Müşteri Toplam Borcunu Güncelle (Opsiyonel ama iyi olur)
+            // Önceki görevde bunu dinamik yaptık ama veritabanındaki static alanı da güncel tutmak iyidir.
+            await supabase.rpc('update_customer_debt', { customer_id_input: customerId }); // Varsa böyle bir rpc, yoksa manuel hesaplayabiliriz ya da şimdilik atlayabiliriz çünkü UI dinamik.
+            // Manuel basit update
+            try {
+                const { data: allTxs } = await supabase.from('customer_transactions').select('amount').eq('customer_id', customerId);
+                if (allTxs) {
+                    const totalDebt = allTxs.reduce((sum, t) => sum + t.amount, 0);
+                    await supabase.from('customers').update({ debt: totalDebt }).eq('id', customerId);
+                }
+            } catch (e) { console.error("Müşteri borç update hatası", e); }
 
             toast({ title: "Satış Tamamlandı", description: `Tutar: ${formatCurrency(netTotal)}` });
 
@@ -295,7 +383,7 @@ const SalesModule: React.FC<SalesModuleProps> = ({ onClose }) => {
         } finally {
             setIsProcessingSale(false);
         }
-    }, [cart, customerId, selectedAccountId, isProcessingSale, isStockless, discountAmount, products, customers, toast, queryClient, isBarcodeMode]);
+    }, [cart, customerId, selectedAccountId, isProcessingSale, isStockless, discountAmount, receivedAmount, products, customers, toast, queryClient, isBarcodeMode]);
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => { if (event.key === 'F2') { event.preventDefault(); handleCompleteSale(); } };
@@ -462,6 +550,21 @@ const SalesModule: React.FC<SalesModuleProps> = ({ onClose }) => {
                                     <span className="flex items-center gap-1 text-gray-400"><Tag className="h-3 w-3" /> İndirim:</span>
                                     <Input type="number" value={discountAmount} onChange={e => setDiscountAmount(e.target.value)} className="h-7 w-24 text-right bg-white/5 border-white/10 text-white text-xs focus:border-blue-500/50" />
                                 </div>
+                                <div className="flex justify-between items-center text-xs mb-3">
+                                    <span className="flex items-center gap-1 text-gray-400"><Banknote className="h-3 w-3" /> Alınan:</span>
+                                    <Input
+                                        type="number"
+                                        value={receivedAmount}
+                                        onChange={e => setReceivedAmount(e.target.value)}
+                                        className={cn("h-7 w-24 text-right bg-white/5 border-white/10 text-white text-xs focus:border-blue-500/50",
+                                            parseFloat(receivedAmount) < calculateNetTotal ? "text-red-400 border-red-500/30" : "text-emerald-400"
+                                        )}
+                                    />
+                                </div>
+                                <div className="flex justify-between text-xs mb-1 text-gray-500">
+                                    <span>Kalan Borç:</span>
+                                    <span className="font-mono">{formatCurrency(Math.max(0, calculateNetTotal - (parseFloat(receivedAmount) || 0)))}</span>
+                                </div>
                                 <div className="flex justify-between items-end border-t border-white/10 pt-3">
                                     <span className="text-sm font-medium text-gray-300">GENEL TOPLAM</span>
                                     <span className="text-2xl font-bold text-blue-400 neon-text font-mono">{formatCurrency(calculateNetTotal)}</span>
@@ -538,7 +641,21 @@ const SalesModule: React.FC<SalesModuleProps> = ({ onClose }) => {
                                             <td className="pl-3 py-2 whitespace-nowrap text-gray-400 font-mono">{new Date(s.date).toLocaleString('tr-TR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</td>
                                             <td className="py-2 text-gray-300 font-medium whitespace-nowrap overflow-hidden text-ellipsis max-w-[150px]" title={customers.find(c => c.id === s.customer_id)?.name}>{customers.find(c => c.id === s.customer_id)?.name}</td>
                                             <td className="py-2 text-gray-500 group-hover:text-gray-400 whitespace-nowrap overflow-hidden text-ellipsis max-w-[300px]" title={s.items.map(i => `${i.name} (${i.cartQuantity})`).join(', ')}>{s.items.map(i => i.name).join(', ')}</td>
-                                            <td className="text-right pr-3 font-bold py-2 text-emerald-400 font-mono">{formatCurrency(s.net_total)}</td>
+                                            <td className="text-right pr-3 font-bold py-2 text-emerald-400 font-mono">
+                                                {(() => {
+                                                    // @ts-ignore - account_transactions useSales ile geliyor
+                                                    const paid = s.account_transactions?.[0]?.amount;
+                                                    if (paid !== undefined && paid !== s.net_total) {
+                                                        return (
+                                                            <div className="flex flex-col items-end leading-tight">
+                                                                <span className="text-emerald-400">{formatCurrency(paid)}</span>
+                                                                <span className="text-[10px] text-gray-500 line-through decoration-gray-500">{formatCurrency(s.net_total)}</span>
+                                                            </div>
+                                                        );
+                                                    }
+                                                    return formatCurrency(s.net_total);
+                                                })()}
+                                            </td>
                                             <td className="text-center py-2 flex justify-center gap-1">
                                                 <Button size="sm" variant="ghost" className="h-7 w-7 p-0 hover:bg-green-500/20 text-gray-500 hover:text-green-400 rounded-md transition-colors" onClick={() => handleSendWhatsapp(s)} title="WhatsApp Fiş Gönder"><MessageCircle className="h-3.5 w-3.5" /></Button>
                                                 <Button size="sm" variant="ghost" className="h-7 w-7 p-0 hover:bg-blue-500/20 text-gray-500 hover:text-blue-400 rounded-md transition-colors" onClick={() => handleEditSaleClick(s)} title="Düzenle"><Edit className="h-3.5 w-3.5" /></Button>

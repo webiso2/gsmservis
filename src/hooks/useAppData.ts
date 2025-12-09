@@ -65,7 +65,7 @@ export const useSales = (startDate: string, endDate: string) => {
 
             const { data, error } = await supabase
                 .from("sales")
-                .select("*, customer:customers(id, name)")
+                .select("*, customer:customers(id, name), account_transactions(*)")
                 .gte("date", `${startDate}T00:00:00`)
                 .lt("date", `${nextDayISO}T00:00:00`)
                 .order("date", { ascending: false });

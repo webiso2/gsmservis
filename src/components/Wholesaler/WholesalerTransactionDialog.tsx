@@ -14,7 +14,7 @@ import { useToast } from "@/hooks/use-toast";
 import type { Wholesaler, WholesalerTransaction, WholesalerTransactionType, PurchaseInvoiceItem } from "@/types/backup";
 import { format } from 'date-fns';
 import { tr } from 'date-fns/locale';
-import { deletePurchaseInvoiceAndRollback, deleteWholesalerPaymentAndRollback } from '@/utils/wholesalerUtils'; // Yolu kontrol edin
+import { deletePurchaseInvoiceAndRollback, deleteWholesalerPaymentAndRollback, deleteStandaloneTransactionAndRollback } from '@/utils/wholesalerUtils'; // Yolu kontrol edin
 
 interface WholesalerTransactionDialogProps {
     isOpen: boolean;
@@ -127,6 +127,18 @@ const WholesalerTransactionDialog: React.FC<WholesalerTransactionDialogProps> = 
         else { toast({ title: "Hata", description: result.message, variant: "destructive" }); fetchTransactions(); }
     };
 
+    // Bağımsız Hareket Silme Handler
+    const handleDeleteStandaloneClick = async (txId: string, amount: number) => {
+        if (!wholesaler?.id || isProcessingId) return;
+        const confirm = window.confirm(`Bu stok/borç giriş hareketini (Tutar: ${formatCurrencyLocal(amount)}) silmek istediğinize emin misiniz?\n\nDİKKAT: Toptancı borcu geri alınacaktır (azaltılacaktır).\nAncak ÜRÜN STOĞU OTOMATİK DÜŞMEYECEKTİR. Stok adedini "Stok Yönetimi" sayfasından manuel düzeltmeniz gerekebilir.`);
+        if (!confirm) return;
+        setIsProcessingId(txId);
+        const result = await deleteStandaloneTransactionAndRollback(txId, wholesaler.id);
+        setIsProcessingId(null);
+        if (result.success) { toast({ title: "Başarılı", description: result.message }); fetchTransactions(); }
+        else { toast({ title: "Hata", description: result.message, variant: "destructive" }); fetchTransactions(); }
+    };
+
     // Fatura detay getirme fonksiyonu kaldırıldı.
 
     return (
@@ -201,9 +213,17 @@ const WholesalerTransactionDialog: React.FC<WholesalerTransactionDialogProps> = 
                                                             <td className={`p-3 text-right whitespace-nowrap font-medium font-mono align-top ${tx.amount > 0 ? 'text-red-400' : 'text-emerald-400'}`}> {tx.amount > 0 ? '+' : ''}{formatCurrencyLocal(tx.amount)} </td>
                                                             <td className="p-3 text-right whitespace-nowrap font-mono text-gray-400 align-top">{formatCurrencyLocal(tx.balance_after)}</td>
                                                             <td className="p-3 text-center align-top"> {/* İşlemler Butonları */}
-                                                                {tx.type === 'purchase' && tx.related_purchase_invoice_id && (<Button variant="ghost" size="icon" onClick={() => handleDeleteInvoiceClick(tx.related_purchase_invoice_id)} className="h-8 w-8 p-0 hover:bg-red-500/20 hover:text-red-400 text-gray-600 transition-colors disabled:opacity-50" disabled={!!isProcessingId} title="Alım Faturasını ve Bu Hareketi Sil"> {isProcessingId === tx.related_purchase_invoice_id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />} </Button>)}
-                                                                {tx.type === 'payment' && (<Button variant="ghost" size="icon" onClick={() => handleDeletePaymentClick(tx.id, tx.amount)} className="h-8 w-8 p-0 hover:bg-red-500/20 hover:text-red-400 text-gray-600 transition-colors disabled:opacity-50" disabled={!!isProcessingId} title="Ödeme Hareketini Sil"> {isProcessingId === tx.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />} </Button>)}
-                                                                {(tx.type !== 'purchase' || !tx.related_purchase_invoice_id) && tx.type !== 'payment' && (<span className="text-gray-600">-</span>)}
+                                                                <div className="flex justify-center gap-1">
+                                                                    {tx.type === 'purchase' && (
+                                                                        tx.related_purchase_invoice_id ? (
+                                                                            <Button variant="ghost" size="icon" onClick={() => handleDeleteInvoiceClick(tx.related_purchase_invoice_id)} className="h-8 w-8 p-0 hover:bg-red-500/20 hover:text-red-400 text-gray-600 transition-colors disabled:opacity-50" disabled={!!isProcessingId} title="Alım Faturasını ve Bu Hareketi Sil"> {isProcessingId === tx.related_purchase_invoice_id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />} </Button>
+                                                                        ) : (
+                                                                            <Button variant="ghost" size="icon" onClick={() => handleDeleteStandaloneClick(tx.id, tx.amount)} className="h-8 w-8 p-0 hover:bg-red-500/20 hover:text-red-400 text-gray-600 transition-colors disabled:opacity-50" disabled={!!isProcessingId} title="Bu Giriş Hareketini Sil"> {isProcessingId === tx.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />} </Button>
+                                                                        )
+                                                                    )}
+                                                                    {tx.type === 'payment' && (<Button variant="ghost" size="icon" onClick={() => handleDeletePaymentClick(tx.id, tx.amount)} className="h-8 w-8 p-0 hover:bg-red-500/20 hover:text-red-400 text-gray-600 transition-colors disabled:opacity-50" disabled={!!isProcessingId} title="Ödeme Hareketini Sil"> {isProcessingId === tx.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />} </Button>)}
+                                                                </div>
+                                                                {(tx.type !== 'purchase' && tx.type !== 'payment') && (<span className="text-gray-600">-</span>)}
                                                             </td>
                                                         </tr>
                                                     );

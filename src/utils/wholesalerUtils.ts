@@ -163,7 +163,7 @@ export const deleteWholesalerPaymentAndRollback = async (
             if (fetchedAtx) {
                 accountTxData = fetchedAtx;
                 if (accountTxData.amount !== wholesalerTxData.amount) { console.warn(`Miktar uyuşmazlığı! WholesalerTx: ${wholesalerTxData.amount}, AccountTx: ${accountTxData.amount}`); }
-                 console.log(`İlişkili hesap hareketi bulundu. HesapID: ${accountTxData.account_id}, Tutar: ${accountTxData.amount}`);
+                console.log(`İlişkili hesap hareketi bulundu. HesapID: ${accountTxData.account_id}, Tutar: ${accountTxData.amount}`);
             } else { console.warn("İlişkili hesap hareketi bulunamadı!"); }
         } else { console.warn("Toptancı hareketinin ilişkili hesap hareketi ID'si yok!"); }
 
@@ -172,36 +172,36 @@ export const deleteWholesalerPaymentAndRollback = async (
             console.log(`Adım 3: Hesap hareketi siliniyor (ID: ${accountTxData.id})...`);
             const { error: deleteAtxError } = await supabase.from('account_transactions').delete().eq('id', accountTxData.id);
             if (deleteAtxError) throw new Error(`İlişkili hesap hareketi silinemedi: ${deleteAtxError.message}`);
-             console.log("Hesap hareketi silindi.");
+            console.log("Hesap hareketi silindi.");
         }
 
         // 4. Toptancı Hareketini Sil
         console.log(`Adım 4: Toptancı hareketi siliniyor (ID: ${wholesalerTxData.id})...`);
         const { error: deleteWtxError } = await supabase.from('wholesaler_transactions').delete().eq('id', wholesalerTxData.id);
         if (deleteWtxError) { throw new Error(`Toptancı hareketi silinemedi: ${deleteWtxError.message}. Hesap hareketi silinmiş olabilir, kontrol edin!`); }
-         console.log("Toptancı hareketi silindi.");
+        console.log("Toptancı hareketi silindi.");
 
         // 5. Hesap Bakiyesini Geri Al (Artır) (Eğer hesap hareketi bulunduysa)
         if (accountTxData && accountTxData.account_id) {
             const balanceChange = -accountTxData.amount; // Negatifin tersi
             console.log(`Adım 5: Hesap bakiyesi artırılıyor (RPC): HesapID=${accountTxData.account_id}, Değişim=${balanceChange}`);
-             const { error: accUpdateError } = await supabase.rpc('increment_account_balance', { account_id_input: accountTxData.account_id, balance_change: balanceChange });
-             if (accUpdateError) throw new Error(`Hesap bakiyesi güncellenemedi: ${accUpdateError.message}. Hareketler silindi!`);
-              console.log("Hesap bakiyesi güncellendi.");
-             window.dispatchEvent(new CustomEvent('account-transaction-saved'));
+            const { error: accUpdateError } = await supabase.rpc('increment_account_balance', { account_id_input: accountTxData.account_id, balance_change: balanceChange });
+            if (accUpdateError) throw new Error(`Hesap bakiyesi güncellenemedi: ${accUpdateError.message}. Hareketler silindi!`);
+            console.log("Hesap bakiyesi güncellendi.");
+            window.dispatchEvent(new CustomEvent('account-transaction-saved'));
         }
 
         // 6. Toptancı Borcunu Geri Al (Artır - Sadece TRY)
         const debtChange = -wholesalerTxData.amount; // Negatifin tersi
         console.log(`Adım 6: Toptancı borcu artırılıyor (RPC): WholesalerID=${wholesalerId}, TRY Değişim=${debtChange}, USD Değişim=0`);
         const { error: debtUpdateError } = await supabase.rpc('increment_wholesaler_debt', {
-             wholesaler_id_input: wholesalerId,
-             debt_change_try: debtChange,
-             debt_change_usd: 0
-         });
+            wholesaler_id_input: wholesalerId,
+            debt_change_try: debtChange,
+            debt_change_usd: 0
+        });
         if (debtUpdateError) throw new Error(`Toptancı borcu güncellenemedi: ${debtUpdateError.message}. Hareketler silindi!`);
-         console.log("Toptancı borcu güncellendi.");
-         window.dispatchEvent(new CustomEvent('wholesaler-updated', { detail: { wholesalerId: wholesalerId } }));
+        console.log("Toptancı borcu güncellendi.");
+        window.dispatchEvent(new CustomEvent('wholesaler-updated', { detail: { wholesalerId: wholesalerId } }));
 
         console.log("[deleteWholesalerPayment] İşlem başarıyla tamamlandı.");
         return { success: true, message: "Ödeme hareketi başarıyla silindi ve ilgili kayıtlar geri alındı." };
@@ -209,6 +209,70 @@ export const deleteWholesalerPaymentAndRollback = async (
     } catch (error: any) {
         console.error("[deleteWholesalerPayment] Genel Hata:", error);
         return { success: false, message: `Ödeme silinirken bir hata oluştu: ${error.message}.` };
+    }
+};
+
+interface DeleteStandaloneResult {
+    success: boolean;
+    message: string;
+}
+
+/**
+ * Bağımsız (faturası olmayan) bir toptancı stok giriş hareketini siler ve bakiyeyi (sadece TRY) geri alır.
+ * @param transactionId Silinecek hareket ID'si.
+ * @param wholesalerId Toptancı ID'si.
+ * @returns Sonuç nesnesi.
+ */
+export const deleteStandaloneTransactionAndRollback = async (
+    transactionId: string,
+    wholesalerId: string
+): Promise<DeleteStandaloneResult> => {
+    console.log(`[deleteStandaloneTx] Başladı: TxID=${transactionId}`);
+
+    try {
+        // 1. Hareketi Çek
+        const { data: tx, error: fetchError } = await supabase
+            .from('wholesaler_transactions')
+            .select('id, amount, related_purchase_invoice_id')
+            .eq('id', transactionId)
+            .single();
+
+        if (fetchError) throw new Error(`Hareket bulunamadı: ${fetchError.message}`);
+        if (!tx) throw new Error("Hareket verisi yok.");
+        if (tx.related_purchase_invoice_id) throw new Error("Bu hareket bir faturaya bağlı. Lütfen fatura silme işlemini kullanın.");
+
+        console.log(`Hareket bulundu. Tutar: ${tx.amount} TRY`);
+
+        // 2. Hareketi Sil
+        const { error: deleteError } = await supabase
+            .from('wholesaler_transactions')
+            .delete()
+            .eq('id', transactionId);
+
+        if (deleteError) throw new Error(`Hareket silinemedi: ${deleteError.message}`);
+
+        // 3. Borcu Geri Al
+        // Alış işlemi "+borç" demektir. Silinince "-borç" (azaltma) yapmalıyız.
+        const debtChangeTry = -(tx.amount);
+        const debtChangeUsd = 0; // Şimdilik 0 varsayıyoruz
+
+        console.log(`Borç güncelleniyor (RPC): TRY=${debtChangeTry}`);
+        const { error: rpcError } = await supabase.rpc('increment_wholesaler_debt', {
+            wholesaler_id_input: wholesalerId,
+            debt_change_try: debtChangeTry,
+            debt_change_usd: debtChangeUsd
+        });
+
+        if (rpcError) throw new Error(`Borç güncellenemedi: ${rpcError.message}. (Hareket silindi ancak bakiye güncellenemedi!)`);
+
+        // 4. Update UI
+        window.dispatchEvent(new CustomEvent('wholesaler-updated', { detail: { wholesalerId } }));
+
+        return { success: true, message: "İşlem kaydı silindi ve bakiye güncellendi." };
+
+    } catch (error: any) {
+        console.error("Bağımsız işlem silme hatası:", error);
+        return { success: false, message: `Hata: ${error.message}` };
     }
 };
 

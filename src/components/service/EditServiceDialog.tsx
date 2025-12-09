@@ -24,7 +24,9 @@ import { useToast } from "@/hooks/use-toast";
 import type { Customer } from "@/types/customer";
 import type { Product } from "@/types/backup";
 import type { Service, ServicePart } from "@/types/service";
-import type { Account } from "@/types/backup";
+import type { Account, AccountTransaction } from "@/types/backup";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { format } from "date-fns";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Loader2,
@@ -45,7 +47,10 @@ import {
   Monitor,
   AlertCircle,
   FileText,
-  Search
+  Search,
+  Wallet,
+  History,
+  CreditCard
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Label } from "@/components/ui/label";
@@ -100,6 +105,15 @@ const EditServiceDialog: React.FC<EditServiceDialogProps> = ({
   const [nonStockPartQuantity, setNonStockPartQuantity] = useState<number>(1);
   const [nonStockPartPrice, setNonStockPartPrice] = useState<number>(0);
   const [searchTerm, setSearchTerm] = useState("");
+  const [activeTab, setActiveTab] = useState("details");
+
+  // Payments State
+  const [transactions, setTransactions] = useState<AccountTransaction[]>([]);
+  const [pendingTransactions, setPendingTransactions] = useState<AccountTransaction[]>([]);
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentAccountId, setPaymentAccountId] = useState("");
+  const [paymentDescription, setPaymentDescription] = useState("Servis ödemesi / Kapora");
+  const [isAddingPayment, setIsAddingPayment] = useState(false);
 
   const isNewRecord = useMemo(() => !editingService, [editingService]);
   const initialLoadDone = useRef(false);
@@ -107,7 +121,9 @@ const EditServiceDialog: React.FC<EditServiceDialogProps> = ({
   useEffect(() => {
     if (isOpen) {
       initialLoadDone.current = false;
-      console.log(`[EditServiceDialog Effect 1] Dialog açılıyor.`);
+      console.log(`[EditServiceDialog Effect] Dialog açılıyor.`);
+
+      // Initialize form data
       const serviceData = editingService ? {
         deviceType: editingService.deviceType || "",
         brand: editingService.brand || "",
@@ -116,23 +132,176 @@ const EditServiceDialog: React.FC<EditServiceDialogProps> = ({
         problem: editingService.problem || "",
         diagnosis: editingService.diagnosis || "",
         solution: editingService.solution || "",
-        status: editingService.status || "pending",
-      } : getInitialLocalState();
+        status: (editingService.status as Service["status"]) || "pending",
+      } : {
+        deviceType: "phone",
+        brand: "",
+        model: "",
+        serialNumber: "",
+        problem: "",
+        diagnosis: "",
+        solution: "",
+        status: "pending",
+      };
 
       const initialCustomerId = editingService?.customer_id ? String(editingService.customer_id) : "";
+
       const initialParts = editingService?.parts?.map((p, index) => ({
         ...p,
-        id: p.id || generatePartUiId(p.isStockItem ? 'stock' : 'nonstock'),
+        id: p.id || `stock-${index}`, // Fallback ID if missing
         productId: p.productId || null
       })) || [];
+
       const initialCost = editingService?.cost ?? 0;
 
-      setFormData(serviceData); setCustomerId(initialCustomerId); setSelectedParts(initialParts); setCost(initialCost);
-      setSelectedStockProductId(""); setStockProductQuantity(1); setNonStockPartName(""); setNonStockPartQuantity(1); setNonStockPartPrice(0);
-      setIsSaving(false); setIsCompleting(false); setSearchTerm("");
+      // Reset all states
+      setFormData(serviceData);
+      setCustomerId(initialCustomerId);
+      setSelectedParts(initialParts);
+      setCost(initialCost);
+      setSelectedStockProductId("");
+      setStockProductQuantity(1);
+      setNonStockPartName("");
+      setNonStockPartQuantity(1);
+      setNonStockPartPrice(0);
+      setIsSaving(false);
+      setIsCompleting(false);
+      setSearchTerm("");
+
+      setPendingTransactions([]); // Reset pending when opening
+
+      // Fetch transactions if existing
+      if (editingService?.id) {
+        fetchTransactions(editingService.id);
+      } else {
+        setTransactions([]);
+      }
+
       setTimeout(() => { initialLoadDone.current = true; }, 0);
-    } else { initialLoadDone.current = false; }
+    } else {
+      initialLoadDone.current = false;
+    }
   }, [isOpen, editingService, products]);
+
+  const fetchTransactions = async (serviceId: string) => {
+    const { data, error } = await supabase
+      .from('account_transactions')
+      .select('*')
+      .eq('related_service_id', serviceId)
+      .eq('type', 'income')
+      .order('date', { ascending: false });
+
+    if (error) {
+      console.error("Ödeme geçmişi çekme hatası:", error);
+      toast({ title: "Hata", description: "Ödeme geçmişi yüklenemedi.", variant: "destructive" });
+    } else {
+      setTransactions(data || []);
+    }
+  };
+
+  // Combined list for display
+  const displayTransactions = useMemo(() => {
+    return [...transactions, ...pendingTransactions];
+  }, [transactions, pendingTransactions]);
+
+  const handleAddPayment = async () => {
+    if (!paymentAmount || parseFloat(paymentAmount) <= 0) { toast({ title: "Uyarı", description: "Geçerli bir tutar girin.", variant: "destructive" }); return; }
+    if (!paymentAccountId) { toast({ title: "Uyarı", description: "Hesap seçin.", variant: "destructive" }); return; }
+
+    setIsAddingPayment(true);
+    try {
+      const amount = parseFloat(paymentAmount);
+      const selectedAccount = accounts.find(a => a.id === paymentAccountId);
+
+      // If it's a NEW record, we don't save to DB yet. We just add to a pending list.
+      if (isNewRecord) {
+        const tempTx: AccountTransaction = {
+          id: `temp-${Date.now()}`,
+          created_at: new Date().toISOString(),
+          date: new Date().toISOString(),
+          account_id: paymentAccountId,
+          type: 'income',
+          amount: amount,
+          balance_after: (selectedAccount?.current_balance || 0) + amount, // Approximate visualization
+          description: paymentDescription,
+          related_service_id: null,
+          related_sale_id: null,
+          related_customer_tx_id: null,
+          transfer_pair_id: null,
+          expense_category_id: null
+        };
+
+        setPendingTransactions(prev => [tempTx, ...prev]);
+        toast({ title: "Eklendi", description: "Ödeme taslağa eklendi. Servis oluşturulduğunda işlenecek.", variant: "default" });
+        setPaymentAmount("");
+        setPaymentDescription("Servis ödemesi / Kapora");
+        setIsAddingPayment(false);
+        return;
+      }
+
+      // Existing logic for EDIT mode (Real-time DB save)
+      if (!editingService?.id) return;
+
+      // 1. Update Account Balance via RPC
+      const { error: rpcError } = await supabase.rpc('increment_account_balance', {
+        account_id_input: paymentAccountId,
+        balance_change: amount
+      });
+      if (rpcError) throw new Error(`Bakiye güncelleme hatası: ${rpcError.message}`);
+
+      // 2. Insert Transaction
+      const { data: insertedTx, error: txError } = await supabase.from('account_transactions').insert({
+        date: new Date().toISOString(),
+        account_id: paymentAccountId,
+        type: 'income',
+        amount: amount,
+        balance_after: (selectedAccount?.current_balance || 0) + amount,
+        description: paymentDescription,
+        related_service_id: editingService.id,
+        related_sale_id: null
+      }).select().single();
+
+      if (txError) throw txError;
+
+      toast({ title: "Başarılı", description: "Ödeme alındı." });
+      setPaymentAmount("");
+      setPaymentDescription("Servis ödemesi / Kapora");
+      fetchTransactions(editingService.id);
+
+      // --- YENİ: Müşteri Borç/Alacak Kaydı (Tahsilat) ---
+      const { data: cData } = await supabase.from('customers').select('debt').eq('id', customerId).single();
+      if (cData) {
+        const currentDebt = cData.debt ?? 0;
+        const newDebt = currentDebt - amount; // Ödeme olduğu için borç düşer
+
+        // 3. Customer Transaction
+        await supabase.from('customer_transactions').insert({
+          created_at: new Date().toISOString(),
+          date: new Date().toISOString(),
+          customer_id: customerId,
+          type: 'payment',
+          amount: -amount, // Tahsilat negatif
+          balance: newDebt,
+          description: paymentDescription || 'Servis Ödemesi'
+        });
+
+        // 4. Müşteri Bakiyesi Güncelle
+        await supabase.from('customers').update({ debt: newDebt }).eq('id', customerId);
+      }
+
+    } catch (error: any) {
+      console.error("Ödeme ekleme hatası:", error);
+      toast({ title: "Hata", description: `Ödeme eklenemedi: ${error.message}`, variant: "destructive" });
+    } finally {
+      setIsAddingPayment(false);
+    }
+  };
+
+  const totalPaid = useMemo(() => {
+    return displayTransactions.reduce((sum, t) => sum + (t.amount || 0), 0);
+  }, [displayTransactions]);
+
+  const remainingDebt = cost - totalPaid;
 
   useEffect(() => {
     if (initialLoadDone.current) {
@@ -163,11 +332,15 @@ const EditServiceDialog: React.FC<EditServiceDialogProps> = ({
 
   const handleRemovePart = useCallback((partIdToRemove: string) => { setSelectedParts((prev) => prev.filter((part) => part.id !== partIdToRemove)); }, []);
 
+  // ... handleSave update ...
   const handleSave = async () => {
+    // ... validation ...
     if (!customerId) { toast({ title: "Uyarı", description: "Müşteri seçin.", variant: "destructive" }); return; }
     if (!formData.deviceType || !formData.problem?.trim()) { toast({ title: "Uyarı", description: "Cihaz Türü ve Şikayet zorunludur.", variant: "destructive" }); return; }
+
     setIsSaving(true);
     try {
+      // ... prepare serviceDataForSupabase ...
       const serviceDataForSupabase = {
         customer_id: customerId,
         device_type: formData.deviceType,
@@ -185,12 +358,78 @@ const EditServiceDialog: React.FC<EditServiceDialogProps> = ({
         })),
       };
 
-      let savedServiceData: any; let error: any;
-      if (isNewRecord) { ({ data: savedServiceData, error } = await supabase.from("services").insert(serviceDataForSupabase).select().single()); }
-      else { if (!editingService?.id) throw new Error("ID olmadan servis güncellenemez."); ({ data: savedServiceData, error } = await supabase.from("services").update(serviceDataForSupabase).eq("id", editingService.id).select().single()); }
-      if (error) throw error; if (!savedServiceData) throw new Error("Kaydedilen servis verisi alınamadı.");
+      let savedServiceId = editingService?.id;
+      let savedServiceData: any;
 
+      if (isNewRecord) {
+        const { data, error } = await supabase.from("services").insert(serviceDataForSupabase).select().single();
+        if (error) throw error;
+        savedServiceData = data;
+        savedServiceId = data.id;
+
+        // --- PROCESS PENDING TRANSACTIONS FOR NEW RECORD ---
+        if (pendingTransactions.length > 0 && savedServiceId) {
+          for (const tx of pendingTransactions) {
+            try {
+              // 1. RPC Update
+              await supabase.rpc('increment_account_balance', {
+                account_id_input: tx.account_id,
+                balance_change: tx.amount
+              });
+
+              // 2. Insert Transaction linked to new service
+              await supabase.from('account_transactions').insert({
+                date: tx.date,
+                account_id: tx.account_id,
+                type: 'income',
+                amount: tx.amount,
+                // fetch fresh balance? or use approx. UI needs to handle this visually or refresh later.
+                balance_after: tx.balance_after,
+                description: tx.description,
+                related_service_id: savedServiceId,
+                related_sale_id: null
+              });
+            } catch (innerErr) {
+              console.error("Ödeme kaydedilemedi:", innerErr);
+              toast({ title: "Uyarı", description: "Servis oluşturuldu ancak bazı ödemeler kaydedilemedi.", variant: "destructive" });
+            }
+
+            // --- YENİ: Müşteri Hareket Kaydı (New Service) ---
+            try {
+              const { data: cData } = await supabase.from('customers').select('debt').eq('id', customerId).single();
+              if (cData) {
+                const currentDebt = cData.debt ?? 0;
+                const newDebt = currentDebt - tx.amount;
+
+                await supabase.from('customer_transactions').insert({
+                  created_at: new Date().toISOString(),
+                  date: tx.date || new Date().toISOString(),
+                  customer_id: customerId,
+                  type: 'payment',
+                  amount: -tx.amount,
+                  balance: newDebt,
+                  description: tx.description || 'Servis Ödemesi'
+                });
+
+                await supabase.from('customers').update({ debt: newDebt }).eq('id', customerId);
+              }
+            } catch (custErr) {
+              console.error("Müşteri ödeme kaydı hatası:", custErr);
+            }
+          }
+        }
+
+      } else {
+        // Update existing
+        if (!savedServiceId) throw new Error("ID yok.");
+        const { data, error } = await supabase.from("services").update(serviceDataForSupabase).eq("id", savedServiceId).select().single();
+        if (error) throw error;
+        savedServiceData = data;
+      }
+
+      // ... construct serviceToReturn ...
       const serviceToReturn: Service = {
+        // ... mapping ..., use savedServiceData
         id: savedServiceData.id, created_at: savedServiceData.created_at, date: savedServiceData.date,
         customer_id: String(savedServiceData.customer_id),
         deviceType: savedServiceData.device_type,
@@ -202,10 +441,17 @@ const EditServiceDialog: React.FC<EditServiceDialogProps> = ({
         device_type: savedServiceData.device_type,
         serial_number: savedServiceData.serial_number,
       };
+
       onServiceSaved(serviceToReturn, isNewRecord);
       toast({ title: "Başarılı", description: `Servis ${isNewRecord ? 'oluşturuldu' : 'güncellendi'}.` });
-    } catch (error: any) { console.error("Servis kaydetme hatası:", error); toast({ title: "Hata", description: `Servis kaydedilemedi: ${error.message}`, variant: "destructive" }); }
-    finally { setIsSaving(false); }
+
+    } catch (error: any) {
+      // ... handle error
+      console.error("Kaydetme hatası:", error);
+      toast({ title: "Hata", description: `Kaydedilemedi: ${error.message}`, variant: "destructive" });
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleCompleteService = async () => {
@@ -265,253 +511,375 @@ const EditServiceDialog: React.FC<EditServiceDialogProps> = ({
           </DialogClose>
         </DialogHeader>
 
-        <ScrollArea className="flex-1 overflow-y-auto p-6 bg-black/20">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Sol Taraf */}
-            <div className="space-y-6">
-              {/* Müşteri */}
-              <div className="bg-white/5 p-4 rounded-xl border border-white/5 space-y-3">
-                <Label htmlFor="customer_id" className="text-xs font-bold text-gray-400 flex items-center gap-2">
-                  <User className="h-3 w-3" /> Müşteri *
-                </Label>
-                <div className="flex gap-2">
-                  <div className="relative flex-1">
-                    <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
-                    <Select value={customerId} onValueChange={handleCustomerIdChange} disabled={isSaving || isCompleting}>
-                      <SelectTrigger id="customer_id" className="pl-10 bg-black/40 border-white/10 text-white h-10 text-sm">
-                        <SelectValue placeholder="Müşteri Seçin..." />
-                      </SelectTrigger>
-                      <SelectContent className="bg-gray-800 border-gray-700 text-white">
-                        {!Array.isArray(customers) || customers.length === 0 ? (
-                          <SelectItem value="placeholder-disabled" disabled>Müşteri yok.</SelectItem>
-                        ) : (
-                          customers.map((c) => (<SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>))
-                        )}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <Button type="button" variant="outline" size="icon" onClick={openAddCustomerDialog} disabled={isSaving || isCompleting} className="h-10 w-10 bg-blue-600/20 border-blue-500/30 text-blue-400 hover:bg-blue-600/40 hover:text-blue-300">
-                    <UserPlus className="h-5 w-5" />
-                  </Button>
-                </div>
-              </div>
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
+          <div className="px-6 pt-2">
+            <TabsList className="grid w-full grid-cols-2 bg-white/10">
+              <TabsTrigger value="details">Servis Detayları</TabsTrigger>
+              <TabsTrigger value="payments" disabled={isNewRecord}>Ödemeler & Kapora</TabsTrigger>
+            </TabsList>
+          </div>
 
-              {/* Cihaz Bilgileri */}
-              <div className="bg-white/5 p-4 rounded-xl border border-white/5 space-y-4">
-                <Label className="text-sm font-bold text-blue-400 border-b border-blue-500/20 pb-2 flex items-center gap-2">
-                  <Smartphone className="h-4 w-4" /> Cihaz Bilgileri
-                </Label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="deviceType" className="text-xs font-medium text-gray-400">Tür *</Label>
-                    <Select value={formData.deviceType || ""} onValueChange={(v) => handleSelectChange("deviceType", v)} disabled={isSaving || isCompleting}>
-                      <SelectTrigger id="deviceType" className="bg-black/40 border-white/10 text-white h-9 text-sm">
-                        <SelectValue placeholder="Seçin..." />
-                      </SelectTrigger>
-                      <SelectContent className="bg-gray-800 border-gray-700 text-white">
-                        <SelectItem value="Telefon"><div className="flex items-center gap-2"><Smartphone className="h-3 w-3" /> Telefon</div></SelectItem>
-                        <SelectItem value="Tablet"><div className="flex items-center gap-2"><Tablet className="h-3 w-3" /> Tablet</div></SelectItem>
-                        <SelectItem value="Bilgisayar"><div className="flex items-center gap-2"><Laptop className="h-3 w-3" /> Bilgisayar</div></SelectItem>
-                        <SelectItem value="Diğer"><div className="flex items-center gap-2"><Monitor className="h-3 w-3" /> Diğer</div></SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="brand" className="text-xs font-medium text-gray-400">Marka</Label>
-                    <Input id="brand" name="brand" value={formData.brand || ""} onChange={handleInputChange} disabled={isSaving || isCompleting} className="bg-black/40 border-white/10 text-white h-9 text-sm" />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="model" className="text-xs font-medium text-gray-400">Model</Label>
-                    <Input id="model" name="model" value={formData.model || ""} onChange={handleInputChange} disabled={isSaving || isCompleting} className="bg-black/40 border-white/10 text-white h-9 text-sm" />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="serialNumber" className="text-xs font-medium text-gray-400">Seri No</Label>
-                    <Input id="serialNumber" name="serialNumber" value={formData.serialNumber || ""} onChange={handleInputChange} disabled={isSaving || isCompleting} className="bg-black/40 border-white/10 text-white h-9 text-sm" />
-                  </div>
-                </div>
-              </div>
-
-              {/* Şikayet, Teşhis, Çözüm */}
-              <div className="bg-white/5 p-4 rounded-xl border border-white/5 space-y-4">
-                <Label className="text-sm font-bold text-purple-400 border-b border-purple-500/20 pb-2 flex items-center gap-2">
-                  <FileText className="h-4 w-4" /> Detaylar
-                </Label>
-                <div className="space-y-3">
-                  <div className="space-y-2">
-                    <Label htmlFor="problem" className="text-xs font-medium text-gray-400 flex items-center gap-1"><AlertCircle className="h-3 w-3 text-red-400" /> Şikayet *</Label>
-                    <Textarea id="problem" name="problem" value={formData.problem || ""} onChange={handleInputChange} rows={3} className="bg-black/40 border-white/10 text-white text-sm min-h-[80px]" disabled={isSaving || isCompleting} required placeholder="Müşterinin şikayeti..." />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="diagnosis" className="text-xs font-medium text-gray-400">Teşhis</Label>
-                    <Textarea id="diagnosis" name="diagnosis" value={formData.diagnosis || ""} onChange={handleInputChange} rows={3} className="bg-black/40 border-white/10 text-white text-sm min-h-[80px]" disabled={isSaving || isCompleting} placeholder="Teknik servis teşhisi..." />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="solution" className="text-xs font-medium text-gray-400">Yapılan İşlem / Notlar</Label>
-                    <Textarea id="solution" name="solution" value={formData.solution || ""} onChange={handleInputChange} rows={3} className="bg-black/40 border-white/10 text-white text-sm min-h-[80px]" disabled={isSaving || isCompleting} placeholder="Yapılan işlemler ve notlar..." />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Sağ Taraf */}
-            <div className="space-y-6">
-              {/* Durum ve Ücret */}
-              <div className="bg-white/5 p-4 rounded-xl border border-white/5 grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="status" className="text-xs font-bold text-gray-400">Durum *</Label>
-                  <Select value={formData.status || "pending"} onValueChange={handleStatusChange} disabled={isSaving || isCompleting}>
-                    <SelectTrigger id="status" className="bg-black/40 border-white/10 text-white h-10 text-sm">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent className="bg-gray-800 border-gray-700 text-white">
-                      <SelectItem value="pending">Beklemede</SelectItem>
-                      <SelectItem value="in_progress">İşlemde</SelectItem>
-                      <SelectItem value="completed">Tamamlandı</SelectItem>
-                      <SelectItem value="cancelled">İptal Edildi</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label className="text-xs font-bold text-gray-400">Hesaplanan Ücret</Label>
-                  <div className="h-10 flex items-center justify-end px-4 rounded-md bg-black/40 border border-white/10 text-emerald-400 text-lg font-mono font-bold">
-                    {cost.toFixed(2)} ₺
-                  </div>
-                </div>
-              </div>
-
-              {/* Parça Yönetimi */}
-              <div className="bg-white/5 p-4 rounded-xl border border-white/5 space-y-4 flex-1 flex flex-col">
-                <Label className="text-sm font-bold text-emerald-400 border-b border-emerald-500/20 pb-2 flex items-center gap-2">
-                  <PackageSearch className="h-4 w-4" /> Parça / Hizmet Ekle
-                </Label>
-
-                <div className="space-y-3">
-                  {/* Stoktan Ekle */}
-                  <div className="p-3 rounded-lg bg-black/20 border border-white/5 space-y-2">
-                    <Label className="text-xs font-medium text-gray-400 flex items-center gap-1"><Search className="h-3 w-3" /> Stoktan Seç</Label>
+          <TabsContent value="details" className="flex-1 overflow-hidden flex flex-col mt-0">
+            <ScrollArea className="flex-1 overflow-y-auto p-6 bg-black/20">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Sol Taraf */}
+                <div className="space-y-6">
+                  {/* Müşteri */}
+                  <div className="bg-white/5 p-4 rounded-xl border border-white/5 space-y-3">
+                    <Label htmlFor="customer_id" className="text-xs font-bold text-gray-400 flex items-center gap-2">
+                      <User className="h-3 w-3" /> Müşteri *
+                    </Label>
                     <div className="flex gap-2">
-                      <Select value={selectedStockProductId} onValueChange={setSelectedStockProductId} disabled={isSaving || isCompleting}>
-                        <SelectTrigger className="flex-1 bg-black/40 border-white/10 text-white h-8 text-xs">
-                          <SelectValue placeholder="Ürün Ara..." />
-                        </SelectTrigger>
-                        <SelectContent className="bg-gray-800 border-gray-700 text-white max-h-[200px]">
-                          {!Array.isArray(products) || products.length === 0 ? (
-                            <SelectItem value="placeholder-disabled" disabled>Ürün yok.</SelectItem>
-                          ) : (
-                            products.map((p) => (
-                              <SelectItem key={p.id} value={String(p.id)} className="text-xs">
-                                {p.name} ({p.quantity} Adet) - {(p.selling_price || 0).toFixed(2)}₺
-                              </SelectItem>
-                            ))
-                          )}
-                        </SelectContent>
-                      </Select>
-                      <Input
-                        type="number" min="1" step="1"
-                        value={stockProductQuantity}
-                        onChange={(e) => setStockProductQuantity(parseInt(e.target.value) || 1)}
-                        className="w-16 h-8 bg-black/40 border-white/10 text-white text-xs text-center"
-                        disabled={isSaving || isCompleting || !selectedStockProductId}
-                      />
-                      <Button size="sm" type="button" onClick={handleAddStockPart} disabled={isSaving || isCompleting || !selectedStockProductId || stockProductQuantity < 1} className="h-8 w-8 p-0 bg-emerald-600 hover:bg-emerald-700 text-white">
-                        <PlusCircle className="h-4 w-4" />
+                      <div className="relative flex-1">
+                        <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
+                        <Select value={customerId} onValueChange={handleCustomerIdChange} disabled={isSaving || isCompleting}>
+                          <SelectTrigger id="customer_id" className="pl-10 bg-black/40 border-white/10 text-white h-10 text-sm">
+                            <SelectValue placeholder="Müşteri Seçin..." />
+                          </SelectTrigger>
+                          <SelectContent className="bg-gray-800 border-gray-700 text-white">
+                            {!Array.isArray(customers) || customers.length === 0 ? (
+                              <SelectItem value="placeholder-disabled" disabled>Müşteri yok.</SelectItem>
+                            ) : (
+                              customers.map((c) => (<SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>))
+                            )}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <Button type="button" variant="outline" size="icon" onClick={openAddCustomerDialog} disabled={isSaving || isCompleting} className="h-10 w-10 bg-blue-600/20 border-blue-500/30 text-blue-400 hover:bg-blue-600/40 hover:text-blue-300">
+                        <UserPlus className="h-5 w-5" />
                       </Button>
                     </div>
                   </div>
 
-                  {/* Stok Dışı Ekle */}
-                  <div className="p-3 rounded-lg bg-black/20 border border-white/5 space-y-2">
-                    <Label className="text-xs font-medium text-gray-400 flex items-center gap-1"><PackagePlus className="h-3 w-3" /> Stok Dışı / Hizmet Gir</Label>
-                    <div className="flex flex-col gap-2">
-                      <Input
-                        placeholder="Parça/Hizmet Adı *"
-                        value={nonStockPartName}
-                        onChange={(e) => setNonStockPartName(e.target.value)}
-                        disabled={isSaving || isCompleting}
-                        className="h-8 bg-black/40 border-white/10 text-white text-xs"
-                      />
-                      <div className="flex gap-2">
-                        <div className="flex-1 relative">
-                          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-gray-500">Adet</span>
-                          <Input
-                            type="number" min="1" step="1"
-                            value={nonStockPartQuantity}
-                            onChange={(e) => setNonStockPartQuantity(parseInt(e.target.value) || 1)}
-                            className="h-8 pl-10 bg-black/40 border-white/10 text-white text-xs"
-                            disabled={isSaving || isCompleting || !nonStockPartName.trim()}
-                          />
-                        </div>
-                        <div className="flex-1 relative">
-                          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-gray-500">Fiyat</span>
-                          <Input
-                            type="number" min="0" step="0.01"
-                            value={nonStockPartPrice}
-                            onChange={(e) => setNonStockPartPrice(parseFloat(e.target.value) || 0)}
-                            className="h-8 pl-10 bg-black/40 border-white/10 text-white text-xs"
-                            disabled={isSaving || isCompleting || !nonStockPartName.trim()}
-                          />
-                        </div>
-                        <Button size="sm" type="button" onClick={handleAddNonStockPart} disabled={isSaving || isCompleting || !nonStockPartName.trim() || nonStockPartQuantity < 1} className="h-8 w-8 p-0 bg-blue-600 hover:bg-blue-700 text-white">
-                          <PlusCircle className="h-4 w-4" />
-                        </Button>
+                  {/* Cihaz Bilgileri */}
+                  <div className="bg-white/5 p-4 rounded-xl border border-white/5 space-y-4">
+                    <Label className="text-sm font-bold text-blue-400 border-b border-blue-500/20 pb-2 flex items-center gap-2">
+                      <Smartphone className="h-4 w-4" /> Cihaz Bilgileri
+                    </Label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="deviceType" className="text-xs font-medium text-gray-400">Tür *</Label>
+                        <Select value={formData.deviceType || ""} onValueChange={(v) => handleSelectChange("deviceType", v)} disabled={isSaving || isCompleting}>
+                          <SelectTrigger id="deviceType" className="bg-black/40 border-white/10 text-white h-9 text-sm">
+                            <SelectValue placeholder="Seçin..." />
+                          </SelectTrigger>
+                          <SelectContent className="bg-gray-800 border-gray-700 text-white">
+                            <SelectItem value="Telefon"><div className="flex items-center gap-2"><Smartphone className="h-3 w-3" /> Telefon</div></SelectItem>
+                            <SelectItem value="Tablet"><div className="flex items-center gap-2"><Tablet className="h-3 w-3" /> Tablet</div></SelectItem>
+                            <SelectItem value="Bilgisayar"><div className="flex items-center gap-2"><Laptop className="h-3 w-3" /> Bilgisayar</div></SelectItem>
+                            <SelectItem value="Diğer"><div className="flex items-center gap-2"><Monitor className="h-3 w-3" /> Diğer</div></SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="brand" className="text-xs font-medium text-gray-400">Marka</Label>
+                        <Input id="brand" name="brand" value={formData.brand || ""} onChange={handleInputChange} disabled={isSaving || isCompleting} className="bg-black/40 border-white/10 text-white h-9 text-sm" />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="model" className="text-xs font-medium text-gray-400">Model</Label>
+                        <Input id="model" name="model" value={formData.model || ""} onChange={handleInputChange} disabled={isSaving || isCompleting} className="bg-black/40 border-white/10 text-white h-9 text-sm" />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="serialNumber" className="text-xs font-medium text-gray-400">Seri No</Label>
+                        <Input id="serialNumber" name="serialNumber" value={formData.serialNumber || ""} onChange={handleInputChange} disabled={isSaving || isCompleting} className="bg-black/40 border-white/10 text-white h-9 text-sm" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Şikayet, Teşhis, Çözüm */}
+                  <div className="bg-white/5 p-4 rounded-xl border border-white/5 space-y-4">
+                    <Label className="text-sm font-bold text-purple-400 border-b border-purple-500/20 pb-2 flex items-center gap-2">
+                      <FileText className="h-4 w-4" /> Detaylar
+                    </Label>
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <Label htmlFor="problem" className="text-xs font-medium text-gray-400 flex items-center gap-1"><AlertCircle className="h-3 w-3 text-red-400" /> Şikayet *</Label>
+                        <Textarea id="problem" name="problem" value={formData.problem || ""} onChange={handleInputChange} rows={3} className="bg-black/40 border-white/10 text-white text-sm min-h-[80px]" disabled={isSaving || isCompleting} required placeholder="Müşterinin şikayeti..." />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="diagnosis" className="text-xs font-medium text-gray-400">Teşhis</Label>
+                        <Textarea id="diagnosis" name="diagnosis" value={formData.diagnosis || ""} onChange={handleInputChange} rows={3} className="bg-black/40 border-white/10 text-white text-sm min-h-[80px]" disabled={isSaving || isCompleting} placeholder="Teknik servis teşhisi..." />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="solution" className="text-xs font-medium text-gray-400">Yapılan İşlem / Notlar</Label>
+                        <Textarea id="solution" name="solution" value={formData.solution || ""} onChange={handleInputChange} rows={3} className="bg-black/40 border-white/10 text-white text-sm min-h-[80px]" disabled={isSaving || isCompleting} placeholder="Yapılan işlemler ve notlar..." />
                       </div>
                     </div>
                   </div>
                 </div>
 
-                {/* Eklenenler Listesi */}
-                <div className="flex-1 flex flex-col min-h-[150px]">
-                  <Label className="text-xs font-bold text-gray-400 mb-2">Eklenen Parça/Hizmetler:</Label>
-                  <div className="flex-1 rounded-lg border border-white/10 bg-black/40 overflow-hidden">
-                    <ScrollArea className="h-[200px]">
-                      {selectedParts.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center h-full text-gray-500 gap-2 p-4">
-                          <PackageSearch className="h-8 w-8 opacity-20" />
-                          <p className="text-xs italic">Henüz parça veya hizmet eklenmedi.</p>
+                {/* Sağ Taraf */}
+                <div className="space-y-6">
+                  {/* Durum ve Ücret */}
+                  <div className="bg-white/5 p-4 rounded-xl border border-white/5 grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="status" className="text-xs font-bold text-gray-400">Durum *</Label>
+                      <Select value={formData.status || "pending"} onValueChange={handleStatusChange} disabled={isSaving || isCompleting}>
+                        <SelectTrigger id="status" className="bg-black/40 border-white/10 text-white h-10 text-sm">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent className="bg-gray-800 border-gray-700 text-white">
+                          <SelectItem value="pending">Beklemede</SelectItem>
+                          <SelectItem value="in_progress">İşlemde</SelectItem>
+                          <SelectItem value="completed">Tamamlandı</SelectItem>
+                          <SelectItem value="cancelled">İptal Edildi</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label className="text-xs font-bold text-gray-400">Hesaplanan Ücret</Label>
+                      <div className="h-10 flex items-center justify-end px-4 rounded-md bg-black/40 border border-white/10 text-emerald-400 text-lg font-mono font-bold">
+                        {cost.toFixed(2)} ₺
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Parça Yönetimi */}
+                  <div className="bg-white/5 p-4 rounded-xl border border-white/5 space-y-4 flex-1 flex flex-col">
+                    <Label className="text-sm font-bold text-emerald-400 border-b border-emerald-500/20 pb-2 flex items-center gap-2">
+                      <PackageSearch className="h-4 w-4" /> Parça ve İşçilik Ekle
+                    </Label>
+
+                    <div className="space-y-3">
+                      {/* Stoktan Ekle */}
+                      <div className="p-3 rounded-lg bg-black/20 border border-white/5 space-y-2">
+                        <Label className="text-xs font-medium text-gray-400 flex items-center gap-1"><Search className="h-3 w-3" /> Stoktan Seç</Label>
+                        <div className="flex gap-2">
+                          <Select value={selectedStockProductId} onValueChange={setSelectedStockProductId} disabled={isSaving || isCompleting}>
+                            <SelectTrigger className="flex-1 bg-black/40 border-white/10 text-white h-8 text-xs">
+                              <SelectValue placeholder="Ürün Ara..." />
+                            </SelectTrigger>
+                            <SelectContent className="bg-gray-800 border-gray-700 text-white max-h-[200px]">
+                              {!Array.isArray(products) || products.length === 0 ? (
+                                <SelectItem value="placeholder-disabled" disabled>Ürün yok.</SelectItem>
+                              ) : (
+                                products.map((p) => (
+                                  <SelectItem key={p.id} value={String(p.id)} className="text-xs">
+                                    {p.name} ({p.quantity} Adet) - {(p.selling_price || 0).toFixed(2)}₺
+                                  </SelectItem>
+                                ))
+                              )}
+                            </SelectContent>
+                          </Select>
+                          <Input
+                            type="number" min="1" step="1"
+                            value={stockProductQuantity}
+                            onChange={(e) => setStockProductQuantity(parseInt(e.target.value) || 1)}
+                            className="w-16 h-8 bg-black/40 border-white/10 text-white text-xs text-center"
+                            disabled={isSaving || isCompleting || !selectedStockProductId}
+                          />
+                          <Button size="sm" type="button" onClick={handleAddStockPart} disabled={isSaving || isCompleting || !selectedStockProductId || stockProductQuantity < 1} className="h-8 w-8 p-0 bg-emerald-600 hover:bg-emerald-700 text-white">
+                            <PlusCircle className="h-4 w-4" />
+                          </Button>
                         </div>
-                      ) : (
-                        <table className="w-full text-xs text-left">
-                          <thead className="bg-white/5 text-gray-400 sticky top-0 z-10">
-                            <tr>
-                              <th className="p-2 font-medium">Parça/Hizmet</th>
-                              <th className="p-2 font-medium text-center">Adet</th>
-                              <th className="p-2 font-medium text-right">Birim F.</th>
-                              <th className="p-2 font-medium text-right">Toplam</th>
-                              <th className="p-2 font-medium text-center w-8"></th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-white/5">
-                            {selectedParts.map((part, index) => {
-                              const quantity = part.quantity || 0;
-                              const unitPrice = part.unitPrice || 0;
-                              const totalPrice = quantity * unitPrice;
-                              return (
-                                <tr key={part.id || `part-${index}`} className="hover:bg-white/5 transition-colors group">
-                                  <td className="p-2 text-gray-300">
-                                    {part.name}
-                                    {!part.isStockItem && <span className="text-blue-400 text-[10px] ml-1">(Dış)</span>}
-                                  </td>
-                                  <td className="p-2 text-center text-gray-400">{quantity}</td>
-                                  <td className="p-2 text-right text-gray-400 font-mono">{unitPrice.toFixed(2)}₺</td>
-                                  <td className="p-2 text-right text-emerald-400 font-mono font-medium">{totalPrice.toFixed(2)}₺</td>
-                                  <td className="p-2 text-center">
-                                    <Button variant="ghost" size="icon" className="h-6 w-6 text-gray-500 hover:text-red-400 hover:bg-red-500/10 p-0 opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => handleRemovePart(part.id)} disabled={isSaving || isCompleting}>
-                                      <Trash2 className="h-3.5 w-3.5" />
-                                    </Button>
-                                  </td>
+                      </div>
+
+                      {/* Stok Dışı Ekle */}
+                      <div className="p-3 rounded-lg bg-black/20 border border-white/5 space-y-2">
+                        <Label className="text-xs font-medium text-gray-400 flex items-center gap-1"><PackagePlus className="h-3 w-3" /> Stok Dışı / Hizmet Gir</Label>
+                        <div className="flex flex-col gap-2">
+                          <Input
+                            placeholder="Parça veya İşçilik Adı *"
+                            value={nonStockPartName}
+                            onChange={(e) => setNonStockPartName(e.target.value)}
+                            disabled={isSaving || isCompleting}
+                            className="h-8 bg-black/40 border-white/10 text-white text-xs"
+                          />
+                          <div className="flex gap-2">
+                            <div className="flex-1 relative">
+                              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-gray-500">Adet</span>
+                              <Input
+                                type="number" min="1" step="1"
+                                value={nonStockPartQuantity}
+                                onChange={(e) => setNonStockPartQuantity(parseInt(e.target.value) || 1)}
+                                className="h-8 pl-10 bg-black/40 border-white/10 text-white text-xs"
+                                disabled={isSaving || isCompleting || !nonStockPartName.trim()}
+                              />
+                            </div>
+                            <div className="flex-1 relative">
+                              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-gray-500">Fiyat</span>
+                              <Input
+                                type="number" min="0" step="0.01"
+                                value={nonStockPartPrice}
+                                onChange={(e) => setNonStockPartPrice(parseFloat(e.target.value) || 0)}
+                                className="h-8 pl-10 bg-black/40 border-white/10 text-white text-xs"
+                                disabled={isSaving || isCompleting || !nonStockPartName.trim()}
+                              />
+                            </div>
+                            <Button size="sm" type="button" onClick={handleAddNonStockPart} disabled={isSaving || isCompleting || !nonStockPartName.trim() || nonStockPartQuantity < 1} className="h-8 w-8 p-0 bg-blue-600 hover:bg-blue-700 text-white">
+                              <PlusCircle className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Eklenenler Listesi */}
+                    <div className="flex-1 flex flex-col min-h-[150px]">
+                      <Label className="text-xs font-bold text-gray-400 mb-2">Eklenen Parça/Hizmetler:</Label>
+                      <div className="flex-1 rounded-lg border border-white/10 bg-black/40 overflow-hidden">
+                        <ScrollArea className="h-[200px]">
+                          {selectedParts.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center h-full text-gray-500 gap-2 p-4">
+                              <PackageSearch className="h-8 w-8 opacity-20" />
+                              <p className="text-xs italic">Henüz parça veya hizmet eklenmedi.</p>
+                            </div>
+                          ) : (
+                            <table className="w-full text-xs text-left">
+                              <thead className="bg-white/5 text-gray-400 sticky top-0 z-10">
+                                <tr>
+                                  <th className="p-2 font-medium">Parça/Hizmet</th>
+                                  <th className="p-2 font-medium text-center">Adet</th>
+                                  <th className="p-2 font-medium text-right">Birim F.</th>
+                                  <th className="p-2 font-medium text-right">Toplam</th>
+                                  <th className="p-2 font-medium text-center w-8"></th>
                                 </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      )}
-                    </ScrollArea>
+                              </thead>
+                              <tbody className="divide-y divide-white/5">
+                                {selectedParts.map((part, index) => {
+                                  const quantity = part.quantity || 0;
+                                  const unitPrice = part.unitPrice || 0;
+                                  const totalPrice = quantity * unitPrice;
+                                  return (
+                                    <tr key={part.id || `part-${index}`} className="hover:bg-white/5 transition-colors group">
+                                      <td className="p-2 text-gray-300">
+                                        {part.name}
+                                        {!part.isStockItem && <span className="text-blue-400 text-[10px] ml-1">(Dış)</span>}
+                                      </td>
+                                      <td className="p-2 text-center text-gray-400">{quantity}</td>
+                                      <td className="p-2 text-right text-gray-400 font-mono">{unitPrice.toFixed(2)}₺</td>
+                                      <td className="p-2 text-right text-emerald-400 font-mono font-medium">{totalPrice.toFixed(2)}₺</td>
+                                      <td className="p-2 text-center">
+                                        <Button variant="ghost" size="icon" className="h-6 w-6 text-gray-500 hover:text-red-400 hover:bg-red-500/10 p-0 opacity-0 group-hover:opacity-100 transition-opacity" onClick={() => handleRemovePart(part.id)} disabled={isSaving || isCompleting}>
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </Button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          )}
+                        </ScrollArea>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
+            </ScrollArea>
+
+          </TabsContent>
+
+          <TabsContent value="payments" className="flex-1 overflow-hidden flex flex-col mt-0 p-6 bg-black/20">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
+              {/* Payment Form */}
+              <div className="lg:col-span-1 space-y-4">
+                <div className="bg-white/5 p-4 rounded-xl border border-white/5 space-y-4">
+                  <Label className="text-sm font-bold text-emerald-400 border-b border-emerald-500/20 pb-2 flex items-center gap-2">
+                    <Wallet className="h-4 w-4" /> Ödeme Al / Kapora
+                  </Label>
+
+                  <div className="space-y-3">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-gray-400">Tutar</Label>
+                      <div className="relative">
+                        <Input
+                          type="number"
+                          value={paymentAmount}
+                          onChange={(e) => setPaymentAmount(e.target.value)}
+                          className="pl-8 bg-black/40 border-white/10 text-white"
+                          placeholder="0.00"
+                        />
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">₺</span>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-gray-400">Hesap</Label>
+                      <Select value={paymentAccountId} onValueChange={setPaymentAccountId}>
+                        <SelectTrigger className="bg-black/40 border-white/10 text-white">
+                          <SelectValue placeholder="Hesap seçin..." />
+                        </SelectTrigger>
+                        <SelectContent className="bg-gray-800 border-gray-700 text-white">
+                          {accounts.map(acc => (
+                            <SelectItem key={acc.id} value={acc.id}>{acc.name} ({acc.type === 'credit_card' ? 'K.Kartı' : 'Nakit'})</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-gray-400">Açıklama</Label>
+                      <Textarea
+                        value={paymentDescription}
+                        onChange={(e) => setPaymentDescription(e.target.value)}
+                        className="bg-black/40 border-white/10 text-white text-xs min-h-[60px]"
+                      />
+                    </div>
+
+                    <Button onClick={handleAddPayment} disabled={isAddingPayment} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white">
+                      {isAddingPayment ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <PlusCircle className="h-4 w-4 mr-2" />}
+                      Ödeme Ekle
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="bg-white/5 p-4 rounded-xl border border-white/5 space-y-2">
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-gray-400">Servis Tutarı:</span>
+                    <span className="font-mono font-bold text-white">{formatCurrency(cost)}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-gray-400">Ödenen:</span>
+                    <span className="font-mono font-bold text-emerald-400">{formatCurrency(totalPaid)}</span>
+                  </div>
+                  <div className="border-t border-white/10 pt-2 flex justify-between items-center">
+                    <span className="text-gray-300 font-medium">Kalan:</span>
+                    <span className={cn("font-mono font-bold text-lg", remainingDebt > 0 ? "text-red-400" : "text-gray-400")}>
+                      {formatCurrency(remainingDebt)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Transactions List */}
+              <div className="lg:col-span-2 bg-white/5 rounded-xl border border-white/5 flex flex-col overflow-hidden">
+                <div className="p-4 border-b border-white/10 flex items-center justify-between">
+                  <h3 className="font-bold text-gray-200 flex items-center gap-2">
+                    <History className="h-4 w-4 text-blue-400" /> Ödeme Geçmişi
+                  </h3>
+                </div>
+                <div className="flex-1 overflow-y-auto p-0">
+                  {transactions.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-full text-gray-500 py-10">
+                      <CreditCard className="h-10 w-10 opacity-20 mb-2" />
+                      <p>Henüz ödeme alınmamış.</p>
+                    </div>
+                  ) : (
+                    <table className="w-full text-sm text-left">
+                      <thead className="bg-black/20 text-gray-400 sticky top-0">
+                        <tr>
+                          <th className="p-3 font-medium">Tarih</th>
+                          <th className="p-3 font-medium">Açıklama</th>
+                          <th className="p-3 font-medium text-right">Tutar</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5">
+                        {transactions.map((tx) => (
+                          <tr key={tx.id} className="hover:bg-white/5">
+                            <td className="p-3 text-gray-300">{format(new Date(tx.date), 'dd.MM.yyyy HH:mm')}</td>
+                            <td className="p-3 text-gray-300">{tx.description}</td>
+                            <td className="p-3 text-emerald-400 text-right font-mono font-medium">{formatCurrency(tx.amount)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
             </div>
-          </div>
-        </ScrollArea>
+          </TabsContent>
+        </Tabs>
 
         <DialogFooter className="bg-white/5 border-t border-white/10 p-4 flex flex-row justify-end gap-3">
           {!isNewRecord && formData.status === 'completed' && (
@@ -529,7 +897,7 @@ const EditServiceDialog: React.FC<EditServiceDialogProps> = ({
           </Button>
         </DialogFooter>
       </DialogContent>
-    </Dialog>
+    </Dialog >
   );
 };
 

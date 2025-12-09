@@ -38,6 +38,28 @@ export interface Service {
     device_type: string; // Gerçek sütun adı
     serial_number: string | null; // Gerçek sütun adı
     tracking_code?: string; // Takip kodu
+    parts?: ServicePart[];
+}
+
+export interface ServicePart {
+    id: string;
+    productId: string | null;
+    name: string;
+    quantity: number;
+    unitPrice: number;
+    isStockItem: boolean;
+}
+
+export interface Product {
+    id: string;
+    name: string;
+    code?: string;
+    quantity: number;
+    selling_price: number;
+    purchase_price?: number;
+    min_stock_level?: number;
+    unit?: string;
+    image?: string;
 }
 
 // Yeni servis eklerken kullanılacak tip (id ve created_at hariç)
@@ -69,6 +91,7 @@ export interface SimpleSale { // SalesModule'den alınabilir
     items: SaleItem[];
     total: number; // Brüt
     net_total: number; // Net
+    discount_amount?: number;
     customer_id: string;
     type: 'sale';
 }

@@ -185,24 +185,35 @@ const CustomerDetailPanel: React.FC<CustomerDetailPanelProps> = ({ customerId, o
                       <CreditCard className="h-5 w-5 text-emerald-400" /> Finansal Durum
                     </h3>
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                      <div className="p-4 rounded-lg bg-white/5 border border-white/10">
-                        <p className="text-xs text-gray-500 mb-1">Güncel Bakiye / Borç</p>
-                        <p className={cn("text-2xl font-bold font-mono", customer.debt > 0 ? 'text-red-400' : 'text-emerald-400')}>
-                          {formatCurrency(customer.debt)}
-                        </p>
-                      </div>
-                      <div className="p-4 rounded-lg bg-white/5 border border-white/10">
-                        <p className="text-xs text-gray-500 mb-1">Kredi Limiti</p>
-                        <p className="text-2xl font-bold font-mono text-gray-200">
-                          {formatCurrency(customer.credit_limit)}
-                        </p>
-                      </div>
-                      <div className="p-4 rounded-lg bg-white/5 border border-white/10">
-                        <p className="text-xs text-gray-500 mb-1">Toplam Kredi</p>
-                        <p className="text-2xl font-bold font-mono text-gray-200">
-                          {formatCurrency(customer.total_credit)}
-                        </p>
-                      </div>
+                      {(() => {
+                        const calculatedBalance = transactions.reduce((sum, t) => sum + t.amount, 0);
+                        const calculatedTotalPayments = transactions
+                          .filter(t => t.amount < 0)
+                          .reduce((sum, t) => sum + Math.abs(t.amount), 0);
+
+                        return (
+                          <>
+                            <div className="p-4 rounded-lg bg-white/5 border border-white/10">
+                              <p className="text-xs text-gray-500 mb-1">Güncel Bakiye / Borç</p>
+                              <p className={cn("text-2xl font-bold font-mono", calculatedBalance > 0 ? 'text-red-400' : 'text-emerald-400')}>
+                                {formatCurrency(calculatedBalance)}
+                              </p>
+                            </div>
+                            <div className="p-4 rounded-lg bg-white/5 border border-white/10">
+                              <p className="text-xs text-gray-500 mb-1">Kredi Limiti</p>
+                              <p className="text-2xl font-bold font-mono text-gray-200">
+                                {formatCurrency(customer.credit_limit)}
+                              </p>
+                            </div>
+                            <div className="p-4 rounded-lg bg-white/5 border border-white/10">
+                              <p className="text-xs text-gray-500 mb-1">Toplam Ödeme</p>
+                              <p className="text-2xl font-bold font-mono text-gray-200">
+                                {formatCurrency(calculatedTotalPayments)}
+                              </p>
+                            </div>
+                          </>
+                        );
+                      })()}
                     </div>
                   </div>
                 </div>

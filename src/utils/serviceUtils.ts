@@ -217,6 +217,7 @@ export const completeServiceProcess = async (
   const saleItems: SaleItem[] = usedParts.map((part) => {
     const productInfo = productsInfo.find((p) => p.id === part.productId);
     return {
+      product_id: part.productId,
       id: part.productId,
       code: productInfo?.code ?? (part.productId ? `STOK-${part.productId.substring(0, 6)}` : `SERV-${part.id.substring(0, 6)}`),
       name: part.name,
@@ -252,70 +253,108 @@ export const completeServiceProcess = async (
   console.log(`[completeServiceProcess] Satış kaydı oluşturuldu: ID=${insertedSale.id}`);
 
   // --- 3. Hesap Hareketi ve Bakiye Güncelleme ---
-  console.log("[completeServiceProcess] Hesap hareketi oluşturuluyor...");
 
-  const { data: accountData, error: accError } = await supabase
-    .from("accounts")
-    .select("id, current_balance")
-    .eq("type", "cash")
-    .order("is_default", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  // Önce mevcut ödemeleri kontrol et
+  console.log("[completeServiceProcess] Mevcut ödemeler kontrol ediliyor...");
+  const { data: existingPayments, error: paymentError } = await supabase
+    .from('account_transactions')
+    .select('amount')
+    .eq('related_service_id', service.id)
+    .eq('type', 'income');
 
-  if (accError) {
-    throw new Error(`Ödeme için kasa hesabı bulunamadı: ${accError.message}`);
+  if (paymentError) {
+    console.error("Ödeme kontrol hatası:", paymentError);
+    // Devam edelim, ama loglayalım.
   }
 
-  if (!accountData) {
-    throw new Error("Gelirin işleneceği bir 'Kasa' tipi hesap bulunamadı.");
-  }
+  const totalPaid = existingPayments?.reduce((sum, tx) => sum + (tx.amount || 0), 0) || 0;
 
-  const paymentAccountId = accountData.id;
-  const currentBalance = accountData.current_balance ?? 0;
-  const newBalance = currentBalance + service.cost;
+  // --- YENİ: Müşteri Borç Kaydı (Finansal Entegrasyon) ---
+  console.log("[completeServiceProcess] Müşteri borç kaydı oluşturuluyor...");
 
-  const accountTransactionData: Omit<AccountTransaction, "id" | "created_at"> = {
-    date: saleData.date,
-    account_id: paymentAccountId,
-    type: "income",
-    amount: service.cost,
-    balance_after: newBalance,
-    description: `Servis Geliri: ${service.customerName || "?"} (Servis: ${service.id.substring(0, 6)}, Satış: ${insertedSale.id.substring(0, 6)})`,
-    related_sale_id: insertedSale.id,
-    related_service_id: service.id,
-    related_customer_tx_id: null,
-    transfer_pair_id: null,
-    expense_category_id: null,
-  };
-
-  const { data: insertedTx, error: txInsertError } = await supabase
-    .from("account_transactions")
-    .insert(accountTransactionData)
-    .select("id")
+  // 1. Müşterinin mevcut borcunu al
+  const { data: customerData, error: custError } = await supabase
+    .from('customers')
+    .select('debt')
+    .eq('id', service.customer_id)
     .single();
 
-  if (txInsertError || !insertedTx) {
-    await supabase.from("sales").delete().eq("id", insertedSale.id);
-    throw new Error(`Hesap hareketi oluşturulamadı: ${txInsertError?.message}`);
+  if (custError) {
+    console.error("Müşteri borç bilgisi alınamadı:", custError);
+    throw new Error(`Müşteri bilgisi alınamadı: ${custError.message}`);
   }
 
-  console.log(`[completeServiceProcess] Hesap hareketi eklendi: ID=${insertedTx.id}`);
+  // 2. Servis Ücretini Borç Olarak Ekle (Charge)
+  const currentDebt = customerData.debt ?? 0;
+  const newDebtAfterCharge = currentDebt + service.cost;
 
-  const { error: accUpdateError } = await supabase
-    .from("accounts")
-    .update({ current_balance: newBalance })
-    .eq("id", paymentAccountId);
+  const { error: debtTxError } = await supabase.from('customer_transactions').insert({
+    created_at: new Date().toISOString(),
+    date: new Date().toISOString(),
+    customer_id: service.customer_id,
+    type: 'charge', // Borçlandırma
+    amount: service.cost,
+    balance: newDebtAfterCharge,
+    description: `Servis Ücreti: ${service.device_type} - ${service.problem} (Servis ID: ${service.id.substring(0, 6)})`
+  });
 
-  if (accUpdateError) {
-    await supabase.from("account_transactions").delete().eq("id", insertedTx.id);
-    await supabase.from("sales").delete().eq("id", insertedSale.id);
-    throw new Error(`Hesap bakiyesi güncellenemedi: ${accUpdateError.message}`);
+  if (debtTxError) {
+    console.error("Müşteri borç hareketi eklenemedi:", debtTxError);
+    // Kritik hata olarak fırlatabiliriz veya devam edebiliriz.
+    // Finansal tutarlılık için fırlatmak daha iyi.
+    throw new Error(`Müşteri borç kaydı oluşturulamadı: ${debtTxError.message}`);
   }
 
-  console.log(`[completeServiceProcess] Hesap bakiyesi güncellendi.`);
+  // 3. Müşteri Bakiyesini Güncelle
+  let finalDebt = newDebtAfterCharge;
+
+  // Eğer ödeme yapılmışsa, bu ödemeler zaten hesap hareketlerine girdi.
+  // Ancak Müşteri Bakiyesinden (Debt) düşüldü mü?
+  // EditServiceDialog'da yapılan değişiklikle ödemeler anında müşteri bakiyesinden düşülecek.
+  // Bu yüzden burada tekrar düşmeye GEREK YOKTUR, EĞER EditServiceDialog düzgün çalışıyorsa.
+  // Ancak, 'completeServiceProcess' sırasında yapılan ödemeler (varsa) için kontrol etmek gerekir.
+
+  // Strateji: 
+  // - Servis süresince alınan ödemeler (account_transactions type=income related_service_id=...)
+  // - Bu ödemeler alındığı anda 'payment' olarak customer_transactions'a işlenmeliydi.
+  // - Eğer işlenmişse, 'debt' zaten düşmüştür.
+  // - Ama biz şimdi 'cost'u (servis ücretini) yeni ekliyoruz.
+  // - Yani: Başlangıç Debt: 0 -> Ödeme Geldi: -400 (Debt: -400) -> Servis Bitti: +1000 (Debt: 600).
+  // - Bu mantık DOĞRU.
+
+  // Sadece 'debt' alanını güncellememiz lazım.
+  // Supabase 'increment_customer_debt' gibi bir RPC varsa kullanmak en temizi, yoksa direkt update.
+  const { error: custUpdateError } = await supabase
+    .from('customers')
+    .update({ debt: newDebtAfterCharge })
+    .eq('id', service.customer_id);
+
+  if (custUpdateError) {
+    throw new Error(`Müşteri toplam borcu güncellenemedi: ${custUpdateError.message}`);
+  }
+
+  // --- Eski "Kalanı Otomatik Tahsil Et" Mantığı İPTAL EDİLDİ ---
+  // Kullanıcı artık ödemeyi "Ödemeler" sekmesinden manuel eklemeli.
+  // Böylece "Veresiye" (Kalan Borç) takibi yapılabilir.
+
+  if (service.cost > totalPaid) {
+    showToast({
+      title: "Bilgi",
+      description: `Servis tamamlandı. Kalan Borç: ${(service.cost - totalPaid).toFixed(2)} TL`,
+      variant: "default"
+    });
+  } else {
+    showToast({
+      title: "Tamamlandı",
+      description: "Servis başarıyla tamamlandı.",
+      variant: "default"
+    });
+  }
+
   console.log(`[completeServiceProcess] İşlemler başarıyla tamamlandı.`);
 
   window.dispatchEvent(new CustomEvent("sales-updated"));
   window.dispatchEvent(new CustomEvent("account-transaction-saved"));
+  window.dispatchEvent(new CustomEvent("customer-updated")); // Müşteri bakiyesi değişti
 };
 // --- END OF FILE src/utils/serviceUtils.ts ---

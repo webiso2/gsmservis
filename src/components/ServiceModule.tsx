@@ -5,7 +5,7 @@ import { X, Wrench, Plus, Loader2, CheckCircle, Clock, XCircle, Info, ListFilter
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import type { Customer } from "@/types/customer";
-import type { Product } from "@/types/backup";
+import type { Product, Account } from "@/types/backup";
 import type { Service, ServicePart } from "@/types/service";
 import ServiceList from "./service/ServiceList";
 import EditServiceDialog from "./service/EditServiceDialog";
@@ -24,6 +24,7 @@ const ServiceModule: React.FC<ServiceModuleProps> = ({ onClose }) => {
   const [services, setServices] = useState<Service[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isServiceDialogOpen, setIsServiceDialogOpen] = useState<boolean>(false);
   const [editingService, setEditingService] = useState<Service | null>(null);
@@ -37,12 +38,13 @@ const ServiceModule: React.FC<ServiceModuleProps> = ({ onClose }) => {
       const results = await Promise.allSettled([
         supabase.from('customers').select('*').order('name'),
         supabase.from('products').select('*').order('name'),
-        supabase.from('services').select('*, customer:customers!services_customer_id_fkey( name )').order('date', { ascending: false })
+        supabase.from('services').select('*, customer:customers!services_customer_id_fkey( name )').order('date', { ascending: false }),
+        supabase.from('accounts').select('*').order('name')
       ]);
 
       results.forEach((result, index) => {
         if (result.status === 'rejected') {
-          const requestName = ['Customers', 'Products', 'Services'][index];
+          const requestName = ['Customers', 'Products', 'Services', 'Accounts'][index];
           console.error(`[ServiceModule fetchData] İstek BAŞARISIZ (${requestName}):`, result.reason);
         }
       });
@@ -89,6 +91,20 @@ const ServiceModule: React.FC<ServiceModuleProps> = ({ onClose }) => {
         console.error("Servis isteği başarısız oldu:", results[2].reason);
         throw new Error(`Servis: ${results[2].reason?.message || "Bilinmeyen istek hatası"}`);
       }
+
+      if (results[3].status === 'fulfilled') {
+        const accountData = results[3].value.data; const accountError = results[3].value.error;
+        if (accountError) throw new Error(`Hesaplar: ${accountError.message}`);
+        const fetchedAccounts: Account[] = (accountData || []).map(acc => ({
+          id: acc.id, created_at: acc.created_at, name: acc.name ?? '',
+          type: acc.type ?? 'cash',
+          account_number: acc.account_number ?? null, bank_name: acc.bank_name ?? null,
+          initial_balance: acc.initial_balance ?? 0, current_balance: acc.current_balance ?? 0,
+          is_default: acc.is_default ?? false,
+          credit_limit: acc.credit_limit ?? 0
+        }));
+        setAccounts(fetchedAccounts);
+      } else { throw new Error(`Hesaplar: ${results[3].reason?.message || "Bilinmeyen hata"}`); }
 
     } catch (error: any) {
       console.error("[ServiceModule fetchData] Hata Yakalandı! Detaylar:", error);
@@ -210,6 +226,7 @@ const ServiceModule: React.FC<ServiceModuleProps> = ({ onClose }) => {
         onServiceSaved={handleServiceSaved}
         customers={customers}
         products={products}
+        accounts={accounts}
         openAddCustomerDialog={openAddCustomerDialog}
       />
       <AddNewCustomerDialog
