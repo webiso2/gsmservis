@@ -1,74 +1,114 @@
-// --- START OF FILE src/integrations/supabase/client.ts ---
-
 import { createClient } from '@supabase/supabase-js';
-// types/supabase.ts dosyasının doğru yerde olduğunu varsayıyoruz
 import type { Database } from '@/types/supabase';
 
-// Ortam değişkenlerinden URL ve Anahtarı al
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+// LocalStorage anahtarları
+export const SUPABASE_URL_KEY = 'app_supabase_url';
+export const SUPABASE_KEY_KEY = 'app_supabase_anon_key';
 
-// Konsola değerleri yazdır (Hata ayıklama için)
-// console.log("VITE_SUPABASE_URL:", supabaseUrl);
-// console.log("VITE_SUPABASE_ANON_KEY:", supabaseAnonKey ? supabaseAnonKey.substring(0, 10) + "..." : undefined);
+// 1. Önce LocalStorage'dan, yoksa .env'den dene
+const getSupabaseConfig = () => {
+  const localUrl = localStorage.getItem(SUPABASE_URL_KEY);
+  const localKey = localStorage.getItem(SUPABASE_KEY_KEY);
 
-// Eksikse konsola hata yazdır
-if (!supabaseUrl) {
-  console.error("Supabase URL eksik. Lütfen .env dosyasını ve VITE_SUPABASE_URL değişkenini kontrol edin.");
-  // Geliştirme ortamında çalışmaya devam etmek için boş string ile başlatabiliriz,
-  // ancak üretimde hata fırlatmak daha iyi olabilir.
-  // throw new Error("Supabase URL is required.");
-}
-if (!supabaseAnonKey) {
-  console.error("Supabase Anon Key eksik. Lütfen .env dosyasını ve VITE_SUPABASE_ANON_KEY değişkenini kontrol edin.");
-  // throw new Error("Supabase Anon Key is required.");
-}
-
-// Supabase istemcisini oluştur
-// URL veya Anahtar eksikse bile null/boş string ile oluşturulur,
-// ancak sonraki sorgularda hata verecektir.
-export const supabase = createClient<Database>(supabaseUrl || '', supabaseAnonKey || '');
-
-// Bağlantı Kontrolü Fonksiyonu (Veritabanı Sorgusu ile)
-export const checkSupabaseConnection = async (): Promise<boolean> => {
-  // Eğer URL veya Anahtar baştan eksikse, bağlantı mümkün değil
-  if (!supabaseUrl || !supabaseAnonKey) {
-    console.error("Supabase URL/Key eksik olduğu için bağlantı kontrolü başarısız.");
-    return false;
+  if (localUrl && localKey) {
+    return { url: localUrl, key: localKey };
   }
 
+  return {
+    url: import.meta.env.VITE_SUPABASE_URL,
+    key: import.meta.env.VITE_SUPABASE_ANON_KEY
+  };
+};
+
+const config = getSupabaseConfig();
+const supabaseUrl = config.url;
+const supabaseAnonKey = config.key;
+
+// URL validation helper
+const isValidUrl = (urlString: string) => {
   try {
-    // Veritabanına basit bir sorgu yapmayı dene
-    // 'customers' tablosunun var olduğunu varsayıyoruz
-    console.log("Supabase bağlantısı test ediliyor (DB sorgusu)...");
-    const { error } = await supabase
-      .from('customers') // Var olan bir tablo adı olduğundan emin olun
-      .select('id', { count: 'exact', head: true }) // Sadece 1 kayıt var mı diye bak, veri çekme
-      .limit(1);
-
-    // Sorgu sırasında bir hata oluştuysa
-    if (error) {
-      // "relation ... does not exist" hatası tablo adının yanlış olduğunu gösterir
-      // "fetch failed" gibi ağ hataları gerçek bağlantı sorunudur
-      // Auth/JWT hataları bağlantının olduğunu ama yetkinin olmadığını gösterir, bunu BAŞARILI sayabiliriz.
-      if (!error.message.toLowerCase().includes('auth') && !error.message.toLowerCase().includes('jwt')) {
-        console.error('Supabase bağlantı hatası (DB Sorgusu):', error.message);
-        return false; // Gerçek bir hata varsa false dön
-      }
-      console.warn('Supabase sorgu hatası (Auth olabilir, bağlantı var sayılıyor):', error.message);
-      // Auth hatası olsa bile bağlantı var, true dönelim
-    }
-
-    // Hata yoksa veya sadece Auth hatasıysa bağlantı başarılıdır
-    console.log('Supabase bağlantısı başarılı (DB sorgusu).');
-    return true;
-
-  } catch (error) {
-    // Beklenmedik diğer hatalar
-    console.error('Supabase bağlantı kontrolü sırasında beklenmedik hata:', error);
+    return Boolean(new URL(urlString));
+  } catch (e) {
     return false;
   }
 };
-// --- Bağlantı Kontrolü Sonu ---
 
-// --- END OF FILE src/integrations/supabase/client.ts ---
+// Client oluşturma
+// Eğer URL/Key yoksa yine de createClient çağırıyoruz (boş olsa bile),
+// çünkü import eden dosyalar 'supabase' objesini bekliyor.
+// Ancak kullanıldığında hata fırlatacak.
+export const supabase = createClient<Database>(
+  isValidUrl(supabaseUrl) ? supabaseUrl : 'https://placeholder.supabase.co',
+  supabaseAnonKey || 'placeholder',
+  {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+    }
+  }
+);
+
+export const saveSupabaseConfig = (url: string, key: string) => {
+  localStorage.setItem(SUPABASE_URL_KEY, url);
+  localStorage.setItem(SUPABASE_KEY_KEY, key);
+  // Değişikliklerin etkili olması için reload gerekebilir,
+  // ama çağıran yer (SetupPage) bunu yönetmeli.
+};
+
+export const clearSupabaseConfig = () => {
+  localStorage.removeItem(SUPABASE_URL_KEY);
+  localStorage.removeItem(SUPABASE_KEY_KEY);
+}
+
+export const checkSupabaseConnection = async (): Promise<{ success: boolean; error?: string }> => {
+  if (!supabaseUrl || !supabaseAnonKey || !isValidUrl(supabaseUrl)) {
+    return { success: false, error: 'Supabase URL veya Key eksik/geçersiz.' };
+  }
+
+  try {
+    // Basit bir bağlantı testi: 'customers' tablosundan 1 satır çekmeye çalış
+    // Tablo henüz yoksa (kurulum aşaması) 'relation does not exist' hatası döner.
+    // Bu hata bile bağlantının (network/auth) çalıştığını gösterir!
+
+    // Auth hatası almamak için basit bir RPC veya non-auth sorgu denenebilir,
+    // ama 'customers' tablosu RLS ile public ise çalışır.
+
+    const { error } = await supabase
+      .from('customers')
+      .select('id')
+      .limit(1);
+
+    if (error) {
+      // Tablo yok hatası (42P01) -> Bağlantı BAŞARILI, Şema EKSİK
+      // "Could not find the table" hatası da PostgREST'ten dönebilir (Schema Cache hatası)
+      if (
+        error.code === '42P01' ||
+        error.message.includes('relation "public.customers" does not exist') ||
+        error.message.includes('Could not find the table')
+      ) {
+        console.warn("Tablo bulunamadı, ancak Supabase bağlantısı başarılı.");
+        return { success: true };
+      }
+
+      // Diğer hatalar (401 Unauthorized, Network Error vb.)
+      console.error('Supabase bağlantı testi hatası:', error);
+
+      // Eğer "Auth" hatası ise (API Key yanlış)
+      if (error.code === 'PGRST301' || error.message.includes('JWT')) {
+        return { success: false, error: 'API Anahtarı geçersiz veya yetkisiz.' };
+      }
+
+      // Network hatası
+      if (error.message.includes('fetch failed')) {
+        return { success: false, error: 'Sunucuya ulaşılamadı. URL\'i kontrol edin.' };
+      }
+
+      // Bilinmeyen bir hataysa da şimdilik başarısız sayalım
+      return { success: false, error: error.message };
+    }
+
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Beklenmedik bir hata oluştu.' };
+  }
+};

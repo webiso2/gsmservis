@@ -177,22 +177,37 @@ const CustomerModule: React.FC<CustomerModuleProps> = ({ onClose }) => {
 
   const handleDeleteCustomer = async () => {
     if (!selectedCustomer || isEditing) return;
-    if (!window.confirm(`"${selectedCustomer.name}" isimli müşteriyi silmek istediğinizden emin misiniz?\nBu işlem geri alınamaz!`)) return;
+    if (!window.confirm(`"${selectedCustomer.name}" isimli müşteriyi silmek istediğinizden emin misiniz?\n\nDİKKAT: Bu işlem müşteriye ait TÜM SATIŞ, SERVİS ve İŞLEM kayıtlarını da silecektir! Bu işlem geri alınamaz!`)) return;
 
     setIsProcessing(true);
     try {
-      const { error } = await supabase.from('customers').delete().eq('id', selectedCustomer.id);
-      if (error) {
-        if (error.code === '23503') {
-          console.warn("Müşteri silinemedi - İlişkili kayıtlar var:", error);
-          toast({ title: "Hata", description: "Bu müşteriye ait satış, servis veya işlem kaydı bulunduğu için silinemez.", variant: "destructive", duration: 7000 });
-        } else throw error;
-      } else {
-        await queryClient.invalidateQueries({ queryKey: ['customers'] });
-        toast({ title: "Başarılı", description: `"${selectedCustomer.name}" silindi.` });
-        setSelectedCustomer(null);
-        setFormData(initialFormData);
+      // 1. Önce Servis Kayıtlarını Sil
+      await supabase.from('services').delete().eq('customer_id', selectedCustomer.id);
+
+      // 2. Satışları Sil (Önce AccountTransaction bağını koparmak gerekebilir ama cascade genelde halleder)
+      // Satışlara bağlı AccountTransaction'ları manuel temizlemek daha güvenli
+      const { data: sales } = await supabase.from('sales').select('id').eq('customer_id', selectedCustomer.id);
+      if (sales && sales.length > 0) {
+        const saleIds = sales.map(s => s.id);
+        await supabase.from('account_transactions').delete().in('related_sale_id', saleIds);
+        await supabase.from('sales').delete().eq('customer_id', selectedCustomer.id);
       }
+
+      // 3. Customer Transactionları Sil
+      await supabase.from('customer_transactions').delete().eq('customer_id', selectedCustomer.id);
+
+      // 4. İhtiyaçları Sil
+      await supabase.from('needs').delete().eq('customer_id', selectedCustomer.id);
+
+      // 5. Müşteriyi Sil
+      const { error } = await supabase.from('customers').delete().eq('id', selectedCustomer.id);
+
+      if (error) throw error;
+
+      await queryClient.invalidateQueries({ queryKey: ['customers'] });
+      toast({ title: "Başarılı", description: `"${selectedCustomer.name}" ve ilişkili tüm veriler silindi.` });
+      setSelectedCustomer(null);
+      setFormData(initialFormData);
     } catch (error: any) {
       console.error("Müşteri Silme Hatası:", error);
       toast({ title: "Hata", description: `Müşteri silinemedi: ${error.message}`, variant: "destructive" });

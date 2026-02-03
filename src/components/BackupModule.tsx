@@ -32,11 +32,11 @@ const BackupModule: React.FC<BackupModuleProps> = ({ onClose }) => {
 
   const checkConnection = useCallback(async () => {
     console.log("[BackupModule] checkConnection çağrılıyor...");
-    const connected = await checkSupabaseConnection();
-    console.log("[BackupModule] checkSupabaseConnection sonucu:", connected);
-    setIsSupabaseConnected(connected);
-    if (!connected) toast({ title: "Bağlantı Hatası", description: "Supabase bağlantısı kurulamadı.", variant: "destructive" });
-    return connected;
+    const { success, error } = await checkSupabaseConnection();
+    console.log("[BackupModule] checkSupabaseConnection sonucu:", success, error);
+    setIsSupabaseConnected(success);
+    if (!success) toast({ title: "Bağlantı Hatası", description: `Supabase bağlantısı kurulamadı: ${error || 'Bilinmeyen hata'}`, variant: "destructive" });
+    return success;
   }, [toast]);
 
   const fetchOnlineBackups = useCallback(async () => {

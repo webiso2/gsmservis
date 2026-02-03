@@ -12,21 +12,20 @@ export const BUCKET_NAME = 'backups'; // Supabase'deki bucket adınızla eşleş
 
 // Validate BackupData - Yeni tabloları da kontrol et
 export const validateBackupData = (data: any): data is BackupData => {
-  if (typeof data !== 'object' || data === null || typeof data.timestamp !== 'string') return false;
-  const checkArrayOrNull = (key: keyof BackupData) => data[key] === undefined || data[key] === null || Array.isArray(data[key]);
-  return checkArrayOrNull('customers') &&
-         checkArrayOrNull('accounts') &&
-         checkArrayOrNull('expense_categories') && // expense_categories eklendi (varsa)
-         checkArrayOrNull('products') &&
-         checkArrayOrNull('needs') &&
-         checkArrayOrNull('services') &&
-         checkArrayOrNull('sales') &&
-         checkArrayOrNull('customer_transactions') &&
-         checkArrayOrNull('account_transactions') &&
-         checkArrayOrNull('wholesalers') &&             // Eklendi
-         checkArrayOrNull('wholesaler_transactions') && // Eklendi
-         checkArrayOrNull('purchase_invoices') &&       // Eklendi
-         checkArrayOrNull('cashTransactions');          // Eski nakit (varsa)
+    if (typeof data !== 'object' || data === null || typeof data.timestamp !== 'string') return false;
+    const checkArrayOrNull = (key: keyof BackupData) => data[key] === undefined || data[key] === null || Array.isArray(data[key]);
+    return checkArrayOrNull('customers') &&
+        checkArrayOrNull('accounts') &&
+        checkArrayOrNull('expense_categories') && // expense_categories eklendi (varsa)
+        checkArrayOrNull('products') &&
+        checkArrayOrNull('needs') &&
+        checkArrayOrNull('services') &&
+        checkArrayOrNull('sales') &&
+        checkArrayOrNull('customer_transactions') &&
+        checkArrayOrNull('account_transactions') &&
+        checkArrayOrNull('wholesalers') &&             // Eklendi
+        checkArrayOrNull('wholesaler_transactions') && // Eklendi
+        checkArrayOrNull('purchase_invoices');       // Eklendi
 };
 
 // safeParseJSON (Değişiklik yok)
@@ -50,15 +49,13 @@ export const createBackupDataFromSupabase = async (): Promise<BackupData | null>
         'purchase_invoices',        // wholesalers, products bağlı
         'customer_transactions',    // customers bağlı
         'wholesaler_transactions',  // wholesalers, purchase_invoices, account_transactions bağlı
-        'account_transactions',     // accounts, sales, services, customer_transactions, wholesaler_transactions bağlı
-        'cashTransactions'          // Eski nakit (varsa)
+        'account_transactions'     // accounts, sales, services, customer_transactions, wholesaler_transactions bağlı
     ];
 
     try {
         for (const tableName of tablesToBackup) {
             console.log(`Çekiliyor: ${tableName}...`);
-            const supabaseTableName = tableName === 'cashTransactions' ? 'cash_transactions' : tableName;
-            const { data, error } = await supabase.from(supabaseTableName).select('*');
+            const { data, error } = await supabase.from(tableName).select('*');
             if (error) {
                 // expense_categories yoksa hatayı görmezden gel (opsiyonel)
                 if (tableName === 'expense_categories' && error.code === '42P01') { // '42P01' undefined_table
@@ -66,23 +63,17 @@ export const createBackupDataFromSupabase = async (): Promise<BackupData | null>
                     backupData[tableName] = null; // veya undefined bırak
                     continue;
                 }
-                // cash_transactions yoksa hatayı görmezden gel (opsiyonel)
-                 if (tableName === 'cashTransactions' && error.code === '42P01') {
-                     console.warn("cash_transactions tablosu bulunamadı, yedeklemede atlanıyor.");
-                     backupData[tableName] = null;
-                     continue;
-                 }
-                console.error(`Tablo çekme hatası (${supabaseTableName}):`, error);
-                throw new Error(`'${supabaseTableName}' tablosu yedeklenemedi: ${error.message}`);
+                console.error(`Tablo çekme hatası (${tableName}):`, error);
+                throw new Error(`'${tableName}' tablosu yedeklenemedi: ${error.message}`);
             } else {
-                console.log(`${supabaseTableName}: ${data?.length||0} kayıt bulundu.`);
+                console.log(`${tableName}: ${data?.length || 0} kayıt bulundu.`);
                 // JOIN artıklarını temizle
                 if (data) {
                     data.forEach((row: any) => {
-                         delete row.customer;
-                         delete row.account;
-                         // Gerekirse diğer join artıkları da silinebilir
-                     });
+                        delete row.customer;
+                        delete row.account;
+                        // Gerekirse diğer join artıkları da silinebilir
+                    });
                 }
                 backupData[tableName] = data ?? null;
             }
@@ -90,8 +81,8 @@ export const createBackupDataFromSupabase = async (): Promise<BackupData | null>
         console.log("Tüm tablolar çekildi.");
         return backupData as BackupData;
     } catch (error: any) {
-         console.error("Yedek oluşturulurken genel hata:", error);
-         return null;
+        console.error("Yedek oluşturulurken genel hata:", error);
+        return null;
     }
 };
 
@@ -121,19 +112,19 @@ export const restoreBackupToSupabase = async (backupData: BackupData): Promise<{
     console.log("[restoreBackupToSupabase] Başladı...");
 
     // Silme Sırası (Güncellendi): Bağımlılıkları olanlar önce
+    // Silme Sırası (Güncellendi): Bağımlılıkları olanlar önce
     const tablesToDeleteOrder = [
-        'account_transactions',     // En bağımlı (diğer transactionlara bağlı olabilir)
+        'account_transactions',     // En bağımlı
         'wholesaler_transactions',  // purchase_invoices, account_transactions bağlı
-        'customer_transactions',
-        'purchase_invoices',        // wholesalers, products bağlı
-        'sales',                    // customers, products bağlı
-        'services',                 // customers bağlı
+        'customer_transactions',    // customers bağlı
         'needs',                    // products, customers bağlı
-        'cash_transactions',        // Eski nakit (varsa)
+        'sales',                    // customers, products bağlı (buna bağlı acc_tx silindiği için silinebilir)
+        'services',                 // customers bağlı
+        'purchase_invoices',        // wholesalers, products bağlı
         'products',                 // Temel
         'wholesalers',              // Temel
-        'accounts',                 // Temel
-        'customers',                // Temel
+        'accounts',                 // Temel (acc_tx silindiği için silinebilir)
+        'customers',                // Temel (sales, services vb. silindiği için silinebilir)
         'expense_categories'        // Temel (varsa)
     ];
 
@@ -144,7 +135,6 @@ export const restoreBackupToSupabase = async (backupData: BackupData): Promise<{
         'expense_categories',       // Temel (varsa)
         'products',                 // Temel
         'wholesalers',              // Temel
-        'cash_transactions',        // Eski nakit (varsa)
         'needs',                    // products, customers bağlı
         'services',                 // customers bağlı
         'sales',                    // customers, products bağlı
@@ -195,8 +185,7 @@ export const restoreBackupToSupabase = async (backupData: BackupData): Promise<{
         !checkFK(backupData.account_transactions, 'related_customer_tx_id', validCustomerTxIds, 'account_transactions', 'related_customer_tx_id') ||
         !checkFK(backupData.account_transactions, 'related_wholesaler_transaction_id', validWholesalerTxIds, 'account_transactions', 'related_wholesaler_transaction_id') || // Wholesaler TX eklendi
         !checkFK(backupData.account_transactions, 'expense_category_id', validExpenseCategoryIds, 'account_transactions', 'expense_category_id') // Expense Category eklendi (varsa)
-       )
-     {
+    ) {
         return { success: false, error: new Error("Yedek dosyası ilişkisel olarak tutarsız. Konsol loglarını kontrol edin.") };
     }
     console.log("[restoreBackupToSupabase] İlişkisel ön kontrol başarılı.");
@@ -209,14 +198,14 @@ export const restoreBackupToSupabase = async (backupData: BackupData): Promise<{
         for (const tn of tablesToDeleteOrder) {
             const supabaseTableName = tn === 'cashTransactions' ? 'cash_transactions' : tn;
             // Tablonun var olup olmadığını kontrol et (opsiyonel ama daha sağlam)
-             const { error: checkTableError } = await supabase.from(supabaseTableName).select('id', { head: true, count: 'exact' }).limit(0);
-             if (checkTableError && checkTableError.code === '42P01') { // '42P01' undefined_table
-                 console.warn(`${supabaseTableName} tablosu bulunamadı, silme işlemi atlanıyor.`);
-                 continue; // Sonraki tabloya geç
-             } else if (checkTableError) {
-                 // Başka bir hata varsa fırlat
-                  throw new Error(`Tablo kontrol hatası (${supabaseTableName}): ${checkTableError.message}`);
-             }
+            const { error: checkTableError } = await supabase.from(supabaseTableName).select('id', { head: true, count: 'exact' }).limit(0);
+            if (checkTableError && checkTableError.code === '42P01') { // '42P01' undefined_table
+                console.warn(`${supabaseTableName} tablosu bulunamadı, silme işlemi atlanıyor.`);
+                continue; // Sonraki tabloya geç
+            } else if (checkTableError) {
+                // Başka bir hata varsa fırlat
+                throw new Error(`Tablo kontrol hatası (${supabaseTableName}): ${checkTableError.message}`);
+            }
 
             console.log(`Siliniyor: ${supabaseTableName}...`);
             const { error: dE } = await supabase.from(supabaseTableName).delete().neq('id', '00000000-0000-0000-0000-000000000000'); // Tümünü sil
@@ -230,20 +219,19 @@ export const restoreBackupToSupabase = async (backupData: BackupData): Promise<{
         // 2. Yedekten Verileri Ekle (Doğru sırada ve ID'leri koruyarak)
         console.log("[restoreBackupToSupabase] Yedekten veriler ekleniyor...");
         for (const tableName of tablesToInsertOrder) {
-            const supabaseTableName = tableName === 'cashTransactions' ? 'cash_transactions' : tableName;
             let tableData = backupData[tableName as keyof BackupData];
 
             if (tableData && Array.isArray(tableData) && tableData.length > 0) {
-                 // Tablonun var olup olmadığını kontrol et (ekleme için)
-                const { error: checkTableError } = await supabase.from(supabaseTableName).select('id', { head: true, count: 'exact' }).limit(0);
+                // Tablonun var olup olmadığını kontrol et (ekleme için)
+                const { error: checkTableError } = await supabase.from(tableName).select('id', { head: true, count: 'exact' }).limit(0);
                 if (checkTableError && checkTableError.code === '42P01') {
-                    console.warn(`${supabaseTableName} tablosu bulunamadı, ekleme işlemi atlanıyor.`);
+                    console.warn(`${tableName} tablosu bulunamadı, ekleme işlemi atlanıyor.`);
                     continue;
                 } else if (checkTableError) {
-                    throw new Error(`Tablo kontrol hatası (${supabaseTableName}): ${checkTableError.message}`);
+                    throw new Error(`Tablo kontrol hatası (${tableName}): ${checkTableError.message}`);
                 }
 
-                console.log(`Ekleniyor: ${supabaseTableName} (${tableData.length} kayıt)...`);
+                console.log(`Ekleniyor: ${tableName} (${tableData.length} kayıt)...`);
 
                 // JOIN artıklarını temizle ve FK filtrelemesi yap (ön kontrole ek olarak burada da yapalım)
                 let dataToInsert = tableData
@@ -265,7 +253,7 @@ export const restoreBackupToSupabase = async (backupData: BackupData): Promise<{
 
 
                 if (dataToInsert.length < tableData.length) {
-                    console.warn(`[restoreBackupToSupabase] ${supabaseTableName}: ${tableData.length - dataToInsert.length} kayıt FK filtrelemesi nedeniyle atlandı.`);
+                    console.warn(`[restoreBackupToSupabase] ${tableName}: ${tableData.length - dataToInsert.length} kayıt FK filtrelemesi nedeniyle atlandı.`);
                 }
 
                 if (dataToInsert.length > 0) {
@@ -273,19 +261,19 @@ export const restoreBackupToSupabase = async (backupData: BackupData): Promise<{
                     const chunkSize = 500;
                     for (let i = 0; i < dataToInsert.length; i += chunkSize) {
                         const chunk = dataToInsert.slice(i, i + chunkSize);
-                        console.log(` -> ${supabaseTableName} - Chunk ${i / chunkSize + 1} ekleniyor (${chunk.length} kayıt)...`);
-                        const { error: insertError } = await supabase.from(supabaseTableName).insert(chunk);
+                        console.log(` -> ${tableName} - Chunk ${i / chunkSize + 1} ekleniyor (${chunk.length} kayıt)...`);
+                        const { error: insertError } = await supabase.from(tableName).insert(chunk);
                         if (insertError) {
-                            console.error(`${supabaseTableName} chunk ekleme hatası:`, insertError);
+                            console.error(`${tableName} chunk ekleme hatası:`, insertError);
                             // Hatanın detayını göstermeye çalış
-                             let detail = insertError.details;
-                             try { if (detail && typeof detail === 'string') detail = JSON.parse(detail).detail } catch (e) {} // Postgres hatasını parse etmeye çalış
-                            throw new Error(`Veri eklenemedi (${supabaseTableName}): ${insertError.message} ${detail ? `(${detail})` : ''}`);
+                            let detail = insertError.details;
+                            try { if (detail && typeof detail === 'string') detail = JSON.parse(detail).detail } catch (e) { } // Postgres hatasını parse etmeye çalış
+                            throw new Error(`Veri eklenemedi (${tableName}): ${insertError.message} ${detail ? `(${detail})` : ''}`);
                         }
                     }
-                     console.log(`[restoreBackupToSupabase] ${supabaseTableName}: Toplam ${dataToInsert.length} kayıt eklendi.`);
+                    console.log(`[restoreBackupToSupabase] ${tableName}: Toplam ${dataToInsert.length} kayıt eklendi.`);
                 } else {
-                    console.log(`Atlanıyor: ${supabaseTableName} (Filtreleme sonrası veya yedekte kayıt yok)`);
+                    console.log(`Atlanıyor: ${tableName} (Filtreleme sonrası veya yedekte kayıt yok)`);
                 }
             } else {
                 console.log(`Atlanıyor: ${tableName} (Yedekte veri yok veya boş)`);

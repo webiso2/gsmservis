@@ -58,26 +58,53 @@ export const useSales = (startDate: string, endDate: string) => {
         queryFn: async () => {
             console.log('[useSales] Tarih aralığı:', { startDate, endDate });
 
-            // Bitiş tarihine 1 gün ekle (Günün sonunu kapsamak için)
+            // Bitiş tarihine 1 gün ekle
             const endDateObj = new Date(endDate);
             endDateObj.setDate(endDateObj.getDate() + 1);
             const nextDayISO = endDateObj.toISOString().split('T')[0];
 
-            const { data, error } = await supabase
+            // 1. Satışları Çek
+            const { data: salesData, error: salesError } = await supabase
                 .from("sales")
-                .select("*, customer:customers(id, name), account_transactions(*)")
+                .select("*, customer:customers(id, name)")
                 .gte("date", `${startDate}T00:00:00`)
                 .lt("date", `${nextDayISO}T00:00:00`)
                 .order("date", { ascending: false });
 
-            if (error) {
-                console.error('[useSales] Hata:', error);
-                throw error;
+            if (salesError) {
+                console.error('[useSales] Sales Hata:', salesError);
+                throw salesError;
             }
 
-            console.log('[useSales] Çekilen satış sayısı:', data?.length);
-            console.log('[useSales] İlk satış (varsa):', data?.[0]);
-            return data as any[];
+            // 2. Bu satışlara ait ödemeleri çek (Application-side Join)
+            const saleIds = salesData.map(s => s.id);
+            let transactionsMap: Record<string, any[]> = {};
+
+            if (saleIds.length > 0) {
+                const { data: txData, error: txError } = await supabase
+                    .from("account_transactions")
+                    .select("*")
+                    .in("related_sale_id", saleIds);
+
+                if (txError) {
+                    console.warn('[useSales] Transaction çekme hatası (Önemsiz):', txError);
+                    // Hata olsa bile satışı göstermeye devam et, sadece ödeme bilgisi eksik olur
+                } else {
+                    txData?.forEach(tx => {
+                        if (!transactionsMap[tx.related_sale_id]) transactionsMap[tx.related_sale_id] = [];
+                        transactionsMap[tx.related_sale_id].push(tx);
+                    });
+                }
+            }
+
+            // 3. Veriyi Birleştir
+            const combinedData = salesData.map(sale => ({
+                ...sale,
+                account_transactions: transactionsMap[sale.id] || []
+            }));
+
+            console.log('[useSales] Çekilen satış sayısı:', combinedData.length);
+            return combinedData as any[];
         },
         enabled: !!startDate && !!endDate,
     });

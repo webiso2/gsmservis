@@ -62,14 +62,14 @@ const BackupList: React.FC<BackupListProps> = ({ backups, isLoading, isProcessin
                       <Clock className="h-3 w-3 text-gray-500" />
                       {format(new Date(backup.created_at), 'dd.MM.yyyy HH:mm', { locale: tr })}
                     </td>
-                    <td className="px-4 py-3 text-gray-400 font-mono text-xs">
-                      <div className="flex items-center gap-2">
-                        <FileJson className="h-3 w-3 text-yellow-500/50" />
-                        {backup.filename}
+                    <td className="px-4 py-3 text-gray-400 font-mono text-xs max-w-[200px] overflow-hidden">
+                      <div className="flex items-center gap-2" title={backup.filename}>
+                        <FileJson className="h-3 w-3 text-yellow-500/50 flex-shrink-0" />
+                        <span className="truncate">{backup.filename}</span>
                       </div>
                     </td>
                     <td className="px-4 py-3 text-center">
-                      <div className="flex justify-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex justify-center gap-2">
                         <Button
                           variant="ghost"
                           size="sm"

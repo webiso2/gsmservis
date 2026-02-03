@@ -1,69 +1,54 @@
-# Welcome to your Lovable project
+# GSM Servis ve Teknik Takip Sistemi
 
-## Project info
+Modern, hızlı ve kullanıcı dostu bir GSM servis yönetim paneli. Bu uygulama, teknik servis süreçlerini, stok yönetimini, satışları ve müşteri ilişkilerini tek bir noktadan yönetmenizi sağlar.
 
-**URL**: https://lovable.dev/projects/ff1c6d89-eaf9-41d9-98c5-7930ad494f93
+## 🚀 Önemli Özellikler
 
-## How can I edit this code?
+-   **Teknik Servis Takibi:** Cihaz kabul, arıza teşhis, onarım süreci ve teslimat aşamalarını profesyonelce yönetin.
+-   **Müşteri Yönetimi:** Müşteri kayıtları, borç/alacak takibi ve işlem geçmişi.
+-   **Stok ve Ürün Yönetimi:** Parça stokları, aksesuar satışları, kritik stok uyarıları ve barkod desteği.
+-   **Satış ve Kasa Modülü:** Günlük satışlar, gelir-gider takibi ve detaylı kasa raporları.
+-   **Toptancı Yönetimi:** Tedarikçi borç takibi, alış faturaları ve ödemeler.
+-   **Güvenli Erişim:** Supabase Auth ile kullanıcı bazlı giriş, kayıt olma ve şifre sıfırlama süreçleri.
+-   **Modern Arayüz:** Karanlık mod destekli, responsive (mobil uyumlu) ve akıcı kullanıcı deneyimi.
 
-There are several ways of editing your application.
+## 🛠 Kullanılan Teknolojiler
 
-**Use Lovable**
+-   **Frontend:** React, TypeScript, Vite
+-   **Styling:** Tailwind CSS, Shadcn/UI
+-   **Backend/Database:** Supabase (PostgreSQL)
+-   **State Management:** TanStack Query (React Query)
+-   **Icons:** Lucide React
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/ff1c6d89-eaf9-41d9-98c5-7930ad494f93) and start prompting.
+## 📦 Kurulum ve Çalıştırma
 
-Changes made via Lovable will be committed automatically to this repo.
+### 1. Yerel Ortamda Başlatma
 
-**Use your preferred IDE**
+Projeyi bilgisayarınızda çalıştırmak için aşağıdaki adımları izleyin:
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+```bash
+# Bağımlılıkları yükleyin
+npm install
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+# Geliştirme sunucusunu başlatın
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+### 2. Supabase Veritabanı Kurulumu
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+Uygulama kendi veritabanı şemanızı oluşturmanız için bir kurulum sihirbazı ile birlikte gelir:
 
-**Use GitHub Codespaces**
+1.  [Supabase](https://supabase.com) üzerinden yeni bir proje oluşturun.
+2.  Uygulama ilk açıldığında sizi karşılayan **/setup** sayfasında Supabase `URL` ve `Anon Key` bilgilerinizi girin.
+3.  Ekranda çıkan SQL kodunu kopyalayarak Supabase **SQL Editor** kısmında çalıştırın.
+4.  Tablolar oluştuktan sonra "Tabloları Oluşturdum" butonuna basarak uygulamayı kullanmaya başlayabilirsiniz.
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+### 3. Authentication Ayarları
 
-## What technologies are used for this project?
+Kayıt olma ve şifre sıfırlamanın düzgün çalışması için:
+- Supabase panelinde **Authentication > URL Configuration** kısmında **Site URL**'inizi (yerel için `http://localhost:5173`) tanımlayın.
+- Şifre sıfırlama e-postaları için SMTP ayarlarınızı yapılandırabilir veya varsayılan ayarları kullanabilirsiniz.
 
-This project is built with .
+## 📄 Lisans
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
-
-## How can I deploy this project?
-
-Simply open [Lovable](https://lovable.dev/projects/ff1c6d89-eaf9-41d9-98c5-7930ad494f93) and click on Share -> Publish.
-
-## I want to use a custom domain - is that possible?
-
-We don't support custom domains (yet). If you want to deploy your project under your own domain then we recommend using Netlify. Visit our docs for more details: [Custom domains](https://docs.lovable.dev/tips-tricks/custom-domain/)
+Bu proje MIT lisansı ile lisanslanmıştır.
