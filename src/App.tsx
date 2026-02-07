@@ -67,7 +67,7 @@ const App = () => {
             {/* Kurulum Sayfası */}
             <Route path="/setup" element={<SetupPage />} />
 
-            {/* Ana Sayfa (Yönetim Paneli) - Kor koruma altında */}
+            {/* Ana Sayfa (Yönetim Paneli) - koruma altında */}
             <Route path="/" element={
               <RequireConfig>
                 <Index />
