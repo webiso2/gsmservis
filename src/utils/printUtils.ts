@@ -1,10 +1,11 @@
 // --- START OF FILE src/utils/printUtils.ts ---
 import { Service, Customer } from "@/types/service";
 import { getStatusText } from "@/utils/serviceUtils";
+import { getSettings } from "@/utils/settingsUtils";
 
-const LINE_WIDTH = 32;
+export const LINE_WIDTH = 32;
 
-const centerText = (text: string): string => {
+export const centerText = (text: string): string => {
   const t = text || '';
   // Tam ortalama formülü: boşluklar eşit dağıtılacak
   const padding = LINE_WIDTH - t.length;
@@ -17,7 +18,7 @@ const centerText = (text: string): string => {
   return ' '.repeat(Math.max(0, leftPadding)) + t + ' '.repeat(Math.max(0, rightPadding));
 };
 
-const truncateText = (text: string | null | undefined, maxLength: number): string => {
+export const truncateText = (text: string | null | undefined, maxLength: number): string => {
   const t = text || '';
   return t.length > maxLength ? t.substring(0, maxLength - 1) + '…' : t;
 };
@@ -36,7 +37,7 @@ const createTwoColumnRow = (left: string, right: string): string => {
   return leftPart + ' ' + rightPart;
 };
 
-const wrapText = (text: string | null | undefined, maxWidth: number): string[] => {
+export const wrapText = (text: string | null | undefined, maxWidth: number): string[] => {
   const t = text || '';
   if (!t) return [''];
 
@@ -69,11 +70,15 @@ export const printServiceRecord = async (service: Service, customer?: Customer |
   try {
     const separator = '-'.repeat(LINE_WIDTH);
     let content = '\n';
+    const settings = getSettings();
+    const headerLines = [settings.companyName, settings.companyAddress, settings.companyPhone].filter(Boolean);
 
     // TAM ORTALANMIŞ BAŞLIK
-    content += centerText('GSM TEKNIK SERVIS') + '\n';
-    content += centerText('ismail sarikaya') + '\n';
-    content += centerText('0(555) 333 51 33') + '\n';
+    headerLines.forEach(line => {
+      wrapText(line, LINE_WIDTH).forEach(wrappedLine => {
+        content += centerText(wrappedLine) + '\n';
+      });
+    });
     content += separator + '\n';
 
     // Tarih ve saat (düzgün formatlı)
@@ -81,7 +86,7 @@ export const printServiceRecord = async (service: Service, customer?: Customer |
     const time = service.date ? new Date(service.date).toLocaleTimeString('tr-TR',
       { hour: '2-digit', minute: '2-digit' }) : '';
     content += createTwoColumnRow('Tarih:', `${date} ${time}`) + '\n';
-    content += createTwoColumnRow('Fis No:', service.id?.toString() || '') + '\n';
+    content += createTwoColumnRow('Fiş No:', service.id?.toString() || '') + '\n';
     if (service.tracking_code) content += createTwoColumnRow('Takip Kodu:', service.tracking_code) + '\n';
     content += separator + '\n';
 
@@ -119,12 +124,12 @@ export const printServiceRecord = async (service: Service, customer?: Customer |
 
     // Durum ve ücret (geliştirilmiş sütun formatı)
     const statusText = getStatusText(service.status || 'pending');
-    const costText = (service.cost ?? 0).toFixed(2) + 'TL';
+    const costText = (service.cost ?? 0).toFixed(2) + settings.currencySymbol;
     content += createTwoColumnRow('DURUM:', statusText) + '\n';
-    content += createTwoColumnRow('UCRET:', costText) + '\n';
+    content += createTwoColumnRow('ÜCRET:', costText) + '\n';
     content += separator + '\n';
 
-    content += centerText('Tesekkurler!') + '\n';
+    content += centerText('Teşekkurler!') + '\n';
     content += centerText('www.gsmteknik.com') + '\n\n';
 
     await printContent(content);
@@ -140,15 +145,18 @@ const printContent = async (content: string): Promise<void> => {
     alert('Lütfen pop-up engelleyiciyi devre dışı bırakın');
     return;
   }
-
+  const receiptWidth = getSettings().receiptPrinterWidth;
+  const pageWidth = receiptWidth === '80mm' ? '80mm' : '58mm';
+  const contentWidth = receiptWidth === '80mm' ? '76mm' : '56mm';
+  
   pW.document.write(`<!DOCTYPE html>
 <html>
 <head>
-  <title>Servis Fisi</title>
+  <title>Servis Fişi</title>
   <meta charset="UTF-8">
   <style>
     @page {
-      size: 58mm auto;
+      size: ${pageWidth} auto;
       margin: 1mm;
     }
     body {
@@ -157,7 +165,7 @@ const printContent = async (content: string): Promise<void> => {
       font-size: 10px;
       line-height: 1.2;
       margin: 0;
-      width: 56mm;
+      width: ${contentWidth};
       color: #000;
     }
     pre {
